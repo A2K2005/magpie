@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26241f"/><stop offset="1" stop-color="#121110"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffcf6b" stop-opacity="0.55"/><stop offset="1" stop-color="#ffcf6b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="101" y="101" width="822" height="822" rx="185" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="2"/>
+  <rect x="250" y="330" width="420" height="44" rx="22" fill="#5b5750"/>
+  <rect x="250" y="490" width="170" height="44" rx="22" fill="#5b5750"/>
+  <ellipse cx="575" cy="512" rx="190" ry="110" fill="url(#glow)"/>
+  <rect x="450" y="482" width="250" height="60" rx="30" fill="#ffc455"/>
+  <rect x="250" y="650" width="330" height="44" rx="22" fill="#5b5750"/>
+  <path d="M760 262 L778 316 L832 334 L778 352 L760 406 L742 352 L688 334 L742 316 Z" fill="#ffe2a3"/>
+</svg>

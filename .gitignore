@@ -1,0 +1,8 @@
+node_modules
+dist-web
+src-tauri/target
+src-tauri/gen
+.eslintcache
+*.log
+.DS_Store
+.claude/

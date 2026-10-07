@@ -1,0 +1,77 @@
+[package]
+name = "magpie"
+version = "0.2.0"
+description = "Search every screenshot by the words in it or what it shows. Fully offline."
+authors = ["Magpie"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "magpie_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+anyhow = "1"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
+notify = "8"
+trash = "5"
+regex = "1"
+chrono = "0.4"
+# CLIP: ONNX Runtime is linked statically and only touched when visual search is on.
+ort = "=2.0.0-rc.13"
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+ureq = "3"
+drag = "2"
+rqrr = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
+  "Win32_System_Threading",
+  "Win32_System_WinRT",
+  "Win32_System_Power",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_SystemInformation",
+  "Win32_System_DataExchange",
+  "Win32_System_Console",
+  "Win32_Storage_FileSystem",
+  "Win32_System_ProcessStatus",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+libc = "0.2"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-vision = { version = "0.3", features = ["VNObservation", "VNTypes", "VNRequestRevisionProviding"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+# Image decoding and resizing are painfully slow unoptimised; keep debug builds usable.
+[profile.dev.package."*"]
+opt-level = 2
