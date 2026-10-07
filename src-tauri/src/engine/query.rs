@@ -19,6 +19,8 @@ pub struct ParsedQuery {
     pub colors: Vec<String>,
     pub has: Vec<String>,
     pub pinned: bool,
+    pub tags: Vec<String>,
+    pub collections: Vec<String>,
     /// Lowercased extensions without the dot.
     pub exts: Vec<String>,
     /// `[min, max)` in bytes.
@@ -36,11 +38,23 @@ pub struct ParsedQuery {
 }
 
 const MONTHS: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
-    "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
-pub const COLOR_NAMES: [&str; 12] =
-    ["red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "brown", "black", "white", "gray"];
+pub const COLOR_NAMES: [&str; 12] = [
+    "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "brown", "black",
+    "white", "gray",
+];
 const HAS: [&str; 6] = ["url", "email", "phone", "code", "color", "text"];
 const KB: i64 = 1024;
 const MB: i64 = 1024 * KB;
@@ -119,7 +133,12 @@ fn ms(d: NaiveDate) -> i64 {
 }
 
 fn next_month(y: i32, m: u32) -> NaiveDate {
-    if m == 12 { NaiveDate::from_ymd_opt(y + 1, 1, 1) } else { NaiveDate::from_ymd_opt(y, m + 1, 1) }.unwrap()
+    if m == 12 {
+        NaiveDate::from_ymd_opt(y + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(y, m + 1, 1)
+    }
+    .unwrap()
 }
 
 /// Resolves a date word to `[start, end)` in epoch ms (local midnights), plus a label.
@@ -138,28 +157,50 @@ pub fn date_range(v: &str, now: DateTime<Local>) -> Option<(i64, i64, String)> {
         if let Some(i) = MONTHS.iter().position(|m| m.to_lowercase().starts_with(v)) {
             let m = i as u32 + 1;
             // Most recent occurrence of that month that is not in the future.
-            let y = if m <= today.month() { today.year() } else { today.year() - 1 };
+            let y = if m <= today.month() {
+                today.year()
+            } else {
+                today.year() - 1
+            };
             let start = NaiveDate::from_ymd_opt(y, m, 1)?;
-            return Some((ms(start), ms(next_month(y, m)), format!("{} {y}", MONTHS[i])));
+            return Some((
+                ms(start),
+                ms(next_month(y, m)),
+                format!("{} {y}", MONTHS[i]),
+            ));
         }
     }
-    static ISO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$").unwrap());
+    static ISO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$").unwrap());
     let c = ISO.captures(v)?;
     let y: i32 = c[1].parse().ok()?;
     let Some(mo) = c.get(2) else {
         let start = NaiveDate::from_ymd_opt(y, 1, 1)?;
-        return Some((ms(start), ms(NaiveDate::from_ymd_opt(y + 1, 1, 1)?), y.to_string()));
+        return Some((
+            ms(start),
+            ms(NaiveDate::from_ymd_opt(y + 1, 1, 1)?),
+            y.to_string(),
+        ));
     };
     let m: u32 = mo.as_str().parse().ok()?;
     let Some(d) = c.get(3) else {
         let start = NaiveDate::from_ymd_opt(y, m, 1)?;
-        return Some((ms(start), ms(next_month(y, m)), format!("{} {y}", MONTHS[(m - 1) as usize])));
+        return Some((
+            ms(start),
+            ms(next_month(y, m)),
+            format!("{} {y}", MONTHS[(m - 1) as usize]),
+        ));
     };
     let start = NaiveDate::from_ymd_opt(y, m, d.as_str().parse().ok()?)?;
-    Some((ms(start), ms(start + Duration::days(1)), start.format("%Y-%m-%d").to_string()))
+    Some((
+        ms(start),
+        ms(start + Duration::days(1)),
+        start.format("%Y-%m-%d").to_string(),
+    ))
 }
 
-static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(-?)(?:([A-Za-z]+):)?(?:"([^"]*)"?|(\S+))"#).unwrap());
+static TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(-?)(?:([A-Za-z]+):)?(?:"([^"]*)"?|(\S+))"#).unwrap());
 
 /// Parses a query. Unknown `key:value` tokens (such as URLs) stay as search terms.
 pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
@@ -167,17 +208,44 @@ pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
     for c in TOKEN_RE.captures_iter(q) {
         let neg = &c[1] == "-";
         let key = c.get(2).map(|k| k.as_str().to_lowercase());
-        let value = c.get(3).or(c.get(4)).map(|v| v.as_str().trim()).unwrap_or("");
+        let value = c
+            .get(3)
+            .or(c.get(4))
+            .map(|v| v.as_str().trim())
+            .unwrap_or("");
         let lower = value.to_lowercase();
         let Some(key) = key else {
             if !lower.is_empty() {
-                if neg { out.excludes.push(lower) } else { out.terms.push(lower) }
+                if neg {
+                    out.excludes.push(lower)
+                } else {
+                    out.terms.push(lower)
+                }
             }
             continue;
         };
-        let mut push = |k: &'static str, v: String, label: String| out.filters.push(ActiveFilter { key: k, value: v, label });
+        let mut push = |k: &'static str, v: String, label: String| {
+            out.filters.push(ActiveFilter {
+                key: k,
+                value: v,
+                label,
+            })
+        };
         let handled = !neg
             && match key.as_str() {
+                k @ ("tag" | "collection") if !lower.is_empty() => {
+                    if k == "tag" {
+                        out.tags.push(lower.clone());
+                    } else {
+                        out.collections.push(lower.clone());
+                    }
+                    push(
+                        if k == "tag" { "tag" } else { "collection" },
+                        lower.clone(),
+                        format!("{}: {value}", if k == "tag" { "Tag" } else { "Collection" }),
+                    );
+                    true
+                }
                 "in" if !lower.is_empty() => {
                     out.folders.push(lower.clone());
                     push("in", lower.clone(), format!("In \u{201c}{value}\u{201d}"));
@@ -205,7 +273,11 @@ pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
                     None => false,
                 },
                 "color" => {
-                    let c = if lower == "grey" { "gray".to_string() } else { lower.clone() };
+                    let c = if lower == "grey" {
+                        "gray".to_string()
+                    } else {
+                        lower.clone()
+                    };
                     if COLOR_NAMES.contains(&c.as_str()) {
                         out.colors.push(c.clone());
                         push("color", c.clone(), format!("Color: {c}"));
@@ -225,8 +297,20 @@ pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
                     true
                 }
                 "is" if lower == "landscape" || lower == "portrait" => {
-                    out.orientation = Some(if lower == "landscape" { "landscape" } else { "portrait" });
-                    push("is", lower.clone(), if lower == "landscape" { "Landscape".into() } else { "Portrait".into() });
+                    out.orientation = Some(if lower == "landscape" {
+                        "landscape"
+                    } else {
+                        "portrait"
+                    });
+                    push(
+                        "is",
+                        lower.clone(),
+                        if lower == "landscape" {
+                            "Landscape".into()
+                        } else {
+                            "Portrait".into()
+                        },
+                    );
                     true
                 }
                 "ext" => {
@@ -252,15 +336,30 @@ pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
                 },
                 k @ ("width" | "height") => match range(&lower, false) {
                     Some(r) => {
-                        if k == "width" { out.width = Some(r) } else { out.height = Some(r) }
-                        push(if k == "width" { "width" } else { "height" }, lower.clone(), format!("{} {lower} px", if k == "width" { "Width" } else { "Height" }));
+                        if k == "width" {
+                            out.width = Some(r)
+                        } else {
+                            out.height = Some(r)
+                        }
+                        push(
+                            if k == "width" { "width" } else { "height" },
+                            lower.clone(),
+                            format!(
+                                "{} {lower} px",
+                                if k == "width" { "Width" } else { "Height" }
+                            ),
+                        );
                         true
                     }
                     None => false,
                 },
                 "path" if !lower.is_empty() => {
                     out.paths.push(lower.replace('\\', "/"));
-                    push("path", lower.clone(), format!("Path has \u{201c}{value}\u{201d}"));
+                    push(
+                        "path",
+                        lower.clone(),
+                        format!("Path has \u{201c}{value}\u{201d}"),
+                    );
                     true
                 }
                 "sort" => match sort_key(&lower) {
@@ -275,7 +374,11 @@ pub fn parse_query(q: &str, now: DateTime<Local>) -> ParsedQuery {
             };
         if !handled {
             let raw = format!("{key}:{value}").to_lowercase();
-            if neg { out.excludes.push(raw) } else { out.terms.push(raw) }
+            if neg {
+                out.excludes.push(raw)
+            } else {
+                out.terms.push(raw)
+            }
         }
     }
     out
@@ -291,21 +394,36 @@ mod tests {
 
     #[test]
     fn parses_filters() {
-        let p = parse_query(r#"Invoice in:Discord date:week -draft "net 30" color:grey has:url is:pinned http://x.io"#, now());
+        let p = parse_query(
+            r#"Invoice in:Discord date:week -draft "net 30" color:grey has:url is:pinned http://x.io"#,
+            now(),
+        );
         assert_eq!(p.terms, ["invoice", "net 30", "http://x.io"]);
         assert_eq!(p.excludes, ["draft"]);
         assert_eq!(p.folders, ["discord"]);
         assert_eq!(p.colors, ["gray"]);
         assert_eq!(p.has, ["url"]);
         assert!(p.pinned);
-        assert_eq!(p.from, Some(ms(NaiveDate::from_ymd_opt(2026, 9, 30).unwrap())));
+        let metadata = parse_query(r#"tag:Pets collection:"Summer trips""#, now());
+        assert_eq!(metadata.tags, ["pets"]);
+        assert_eq!(metadata.collections, ["summer trips"]);
+        assert_eq!(
+            p.from,
+            Some(ms(NaiveDate::from_ymd_opt(2026, 9, 30).unwrap()))
+        );
         assert_eq!(parse_query("-in:foo", now()).excludes, ["in:foo"]);
-        assert_eq!(parse_query("before:aug", now()).to, Some(ms(NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())));
+        assert_eq!(
+            parse_query("before:aug", now()).to,
+            Some(ms(NaiveDate::from_ymd_opt(2026, 8, 1).unwrap()))
+        );
     }
 
     #[test]
     fn parses_everything_filters() {
-        let p = parse_query(r"cat ext:PNG;.jpg size:>1mb path:Pictures\2024 width:1920 height:<=800 is:portrait sort:size dm:today", now());
+        let p = parse_query(
+            r"cat ext:PNG;.jpg size:>1mb path:Pictures\2024 width:1920 height:<=800 is:portrait sort:size dm:today",
+            now(),
+        );
         assert_eq!(p.terms, ["cat"]);
         assert_eq!(p.exts, ["png", "jpg"]);
         assert_eq!(p.size, Some((MB + 1, i64::MAX)));
@@ -326,7 +444,10 @@ mod tests {
     fn dates() {
         assert_eq!(date_range("aug", now()).unwrap().2, "August 2026");
         assert_eq!(date_range("dec", now()).unwrap().2, "December 2025");
-        assert_eq!(date_range("2026-08-01", now()).unwrap().0, ms(NaiveDate::from_ymd_opt(2026, 8, 1).unwrap()));
+        assert_eq!(
+            date_range("2026-08-01", now()).unwrap().0,
+            ms(NaiveDate::from_ymd_opt(2026, 8, 1).unwrap())
+        );
         assert!(date_range("nope", now()).is_none());
     }
 }

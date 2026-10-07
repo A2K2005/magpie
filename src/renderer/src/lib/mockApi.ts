@@ -14,6 +14,7 @@ import type {
   Settings,
   Shot,
   ShotDetail,
+  ShotMetadata,
   SmartAction,
   SortOrder,
   Stats
@@ -1730,12 +1731,12 @@ function parse(q: string): Parsed {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const DAY = 86400_000
   const re =
-    /(-?)(?:(in|date|dm|before|after|color|has|is|ext|size|path|width|height|sort):(\S+)|"([^"]+)"|(\S+))/gi
+    /(-?)(?:(in|date|dm|before|after|color|has|is|ext|size|path|width|height|sort):("[^"]*"|\S+)|"([^"]+)"|(\S+))/gi
   for (const m of q.matchAll(re)) {
     const neg = m[1] === '-'
     const raw = m[2]?.toLowerCase()
     const key = (raw === 'dm' ? 'date' : raw) as ActiveFilter['key'] | undefined
-    const val = (m[3] ?? m[4] ?? m[5] ?? '').toLowerCase()
+    const val = (m[3] ?? m[4] ?? m[5] ?? '').replace(/^"|"$/g, '').toLowerCase()
     if (!val) continue
     const f = (label: string, pred?: (r: Rec) => boolean): void => {
       out.filters.push({ key: key ?? 'not', value: val, label })
@@ -1845,8 +1846,13 @@ export function createMockApi(): MagpieApi {
   const recs = build(Math.max(1, Number(params.get('copies')) || 1))
   const byId = new Map(recs.map((r) => [r.shot.id, r]))
   const hidden = new Set<number>()
+  let indexCleared = false
+  const metadata = new Map<number, ShotMetadata>()
+  const rejected = new Set<string>()
   let pending: { ids: number[]; timer: number } | null = null
   let settings: Settings = {
+    excludedFolders: [],
+    savedSearches: [],
     folders: params.get('onboarding') === '1' ? [] : FOLDERS.slice(0, 3),
     hotkey: 'Alt+Shift+S',
     copyLatestHotkey: 'Alt+Shift+V',
@@ -1860,12 +1866,17 @@ export function createMockApi(): MagpieApi {
     saveClipboard: false
   }
   const status: IndexStatus = {
+    forceIndexing: false,
+    warnings: [],
     state: 'indexing',
     total: recs.length,
     ocrDone: recs.length - 9,
     embedded: recs.length - 21,
     errors: 1,
-    model: { state: 'downloading', progress: 0.74 },
+    model:
+      params.get('model') === 'ready'
+        ? { state: 'ready' }
+        : { state: 'downloading', progress: 0.74 },
     sharp: recs.length - 40,
     // ?textModel=error shows the failure path.
     textModel:
@@ -1943,7 +1954,7 @@ export function createMockApi(): MagpieApi {
     highlights: OcrLine[] = [],
     snippet?: string
   ): SearchHit {
-    return { shot: { ...r.shot }, match, score, highlights, snippet }
+    return { shot: { ...r.shot }, match, score, highlights, snippet, evidence: [match] }
   }
 
   /** Keeps the best hit of each burst and stamps it with the burst size. */
@@ -1983,11 +1994,38 @@ export function createMockApi(): MagpieApi {
     return { match: exact ? 'text' : 'near', highlights, snippet }
   }
 
+  let activeSearches = 0
   async function search(req: SearchRequest): Promise<SearchResponse> {
-    await sleep(8 + Math.random() * 40)
+    activeSearches++
+    if (params.get('trace') === '1')
+      console.info(
+        '[mock] search',
+        JSON.stringify({
+          query: req.q,
+          mode: req.mode,
+          offset: req.offset ?? 0,
+          active: activeSearches
+        })
+      )
+    await sleep(Number(params.get('searchDelay')) || 8 + Math.random() * 40)
+    activeSearches--
+    if (params.get('failQuery') && req.q === params.get('failQuery'))
+      throw new Error('Preview search failure. Retry or change the query.')
     const t0 = performance.now()
-    const p = parse(req.q)
-    const pool = visible().filter((r) => p.preds.every((f) => f(r)))
+    const p = parse(req.q.replace(/(?:^|\s)(tag|collection):(?:"[^"]*"|\S+)/gi, ' '))
+    const pool = visible().filter(
+      (r) =>
+        p.preds.every((f) => f(r)) &&
+        !settings.excludedFolders.some((f) =>
+          r.shot.path.toLowerCase().startsWith(f.toLowerCase() + '\\')
+        ) &&
+        [...req.q.matchAll(/(?:^|\s)(tag|collection):("[^"]*"|\S+)/gi)].every((m) => {
+          const data = metadata.get(r.shot.id)
+          return (m[1].toLowerCase() === 'tag' ? data?.tags : data?.collections)?.some(
+            (v) => v.toLowerCase() === m[2].replace(/^"|"$/g, '').toLowerCase()
+          )
+        })
+    )
     const semantic = settings.semantic ? status.model.state : 'off'
     let hits: SearchHit[] = []
     let textCount = 0
@@ -2044,11 +2082,12 @@ export function createMockApi(): MagpieApi {
             )
           )
       }
+      if (req.mode === 'visual') textHits.length = 0
       textHits.sort((a, b) => b.score - a.score || b.shot.mtime - a.shot.mtime)
       textCount = textHits.length
       const taken = new Set(textHits.map((h) => h.shot.id))
       const visual =
-        semantic === 'ready'
+        semantic === 'ready' && req.mode !== 'text'
           ? pool
               .filter((r) => !taken.has(r.shot.id))
               .map((r) => ({
@@ -2065,8 +2104,15 @@ export function createMockApi(): MagpieApi {
     }
     const order = p.sort ?? req.sort
     if (order && !req.shuffle) hits.sort((a, b) => SORT_CMP[order](a.shot, b.shot))
+    hits = hits.filter((h) => !rejected.has(`${req.q.trim().toLowerCase()}:${h.shot.id}`))
+    const offset = req.offset ?? 0
+    const limit = req.limit ?? 120
     return {
-      hits: hits.slice(0, req.limit ?? 200),
+      hits: hits.slice(offset, offset + limit),
+      hasMore: offset + limit < hits.length,
+      nextOffset: offset + limit < hits.length ? offset + limit : undefined,
+      query: req.q,
+      mode: req.mode ?? 'all',
       textCount,
       tookMs: Math.max(1, Math.round(performance.now() - t0 + 2)),
       filters: p.filters,
@@ -2123,7 +2169,8 @@ export function createMockApi(): MagpieApi {
         groupSize: groupSize(r.shot.groupId),
         text: r.text,
         lines: r.metas.map((m) => m.line),
-        actions: r.actions
+        actions: r.actions,
+        metadata: metadata.get(id) ?? { note: '', tags: [], collections: [], sourceUrl: '' }
       }
       return d
     },
@@ -2137,6 +2184,17 @@ export function createMockApi(): MagpieApi {
       if (taken.includes(next.hotkey)) next.hotkey = settings.hotkey
       if (taken.includes(next.copyLatestHotkey)) next.copyLatestHotkey = settings.copyLatestHotkey
       settings = next
+      if (
+        indexCleared &&
+        (settings.folders.length || settings.scope === 'everywhere' || settings.saveClipboard)
+      ) {
+        hidden.clear()
+        indexCleared = false
+        status.total = recs.length
+        status.state = 'indexing'
+        statusE.emit(copy())
+        indexedE.emit()
+      }
       if (patch.semantic !== undefined || patch.sharpText !== undefined || patch.folders)
         tick.start()
       return { ...settings }
@@ -2194,6 +2252,66 @@ export function createMockApi(): MagpieApi {
       status.state = paused ? 'paused' : 'indexing'
       statusE.emit(copy())
       if (!paused) tick.start()
+    },
+    async finishIndexing(enabled) {
+      status.forceIndexing = enabled
+      status.waitingReason = undefined
+      status.state = 'indexing'
+      statusE.emit(copy())
+      tick.start()
+    },
+    async retryFailed() {
+      status.errors = 0
+      statusE.emit(copy())
+    },
+    async repairModels() {
+      status.model = { state: 'loading' }
+      tick.start()
+    },
+    async failures() {
+      return status.errors
+        ? [
+            {
+              id: 1,
+              name: 'Unavailable image.png',
+              error: 'Could not decode image. Check the original file and retry.'
+            }
+          ]
+        : []
+    },
+    async updateMetadata(id, value) {
+      metadata.set(id, value)
+      return value
+    },
+    async setRelevant(id, query, relevant) {
+      const key = `${query.trim().toLowerCase()}:${id}`
+      if (relevant) rejected.delete(key)
+      else rejected.add(key)
+    },
+    async exportShots() {
+      throw new Error('Export requires the desktop app. Browser preview uses sample files.')
+    },
+    async exportDiagnostics() {
+      throw new Error('Diagnostic export requires the desktop app.')
+    },
+    async clearIndex() {
+      settings = { ...settings, scope: 'folders', folders: [], saveClipboard: false }
+      indexCleared = true
+      tick.stop()
+      hidden.clear()
+      recs.forEach((r) => hidden.add(r.shot.id))
+      status.total = status.ocrDone = status.embedded = status.sharp = 0
+      metadata.clear()
+      rejected.clear()
+      recs.forEach((r) => {
+        r.shot.pinned = false
+      })
+      status.errors = 0
+      status.forceIndexing = false
+      status.waitingReason = undefined
+      status.state = 'idle'
+      statusE.emit(copy())
+      indexedE.emit()
     },
     async openExternal(url) {
       console.info('[mock] openExternal', url)

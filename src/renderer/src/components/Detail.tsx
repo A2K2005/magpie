@@ -16,11 +16,24 @@ import {
   Pin,
   PinOff,
   ScanSearch,
-  Trash2
+  Trash2,
+  Download,
+  Crop,
+  ThumbsDown
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { OcrLine, SearchHit, ShotDetail, SmartAction } from '../../../shared/types'
-import { basename, bytes, isMac, isMod, longDate, num, plural, trashKey } from '../lib/util'
+import {
+  basename,
+  bytes,
+  isMac,
+  isMod,
+  longDate,
+  num,
+  plural,
+  trashKey,
+  trashName
+} from '../lib/util'
 import type { Actions } from './Search'
 import { Kbd } from './ui'
 
@@ -66,12 +79,19 @@ export default function Detail(props: {
   onIndex(i: number): void
   onClose(): void
   actions: Actions
+  /** Visual search is on, so "Find similar" can work. */
+  semantic: boolean
+  query: string
 }): React.JSX.Element {
-  const { active, hits, index, onIndex, onClose, actions } = props
+  const { active, hits, index, onIndex, onClose, actions, semantic, query } = props
   const hit = hits[index]
   const shot = hit.shot
   const [loaded, setLoaded] = useState<ShotDetail | null>(null)
   const [picked, setPicked] = useState<Set<number>>(() => new Set())
+  const [cropping, setCropping] = useState(false)
+  const [croppingBusy, setCroppingBusy] = useState(false)
+  const [crop, setCrop] = useState<Rect | null>(null)
+  const [loadError, setLoadError] = useState('')
   const [band, setBand] = useState<Rect | null>(null)
   const [cursor, setCursor] = useState(0)
   const frame = useRef<HTMLDivElement>(null)
@@ -104,7 +124,16 @@ export default function Detail(props: {
 
   useEffect(() => {
     let live = true
-    api.getShot(shot.id).then((r) => live && setLoaded(r))
+    api
+      .getShot(shot.id)
+      .then((r) => {
+        if (live) {
+          setLoaded(r)
+          setLoadError('')
+          if (!r) setLoadError('This image is no longer in the library.')
+        }
+      })
+      .catch((e) => live && setLoadError(String(e)))
     return () => {
       live = false
     }
@@ -125,6 +154,9 @@ export default function Detail(props: {
 
   const go = (i: number): void => {
     setPicked(new Set())
+    setLoadError('')
+    setCrop(null)
+    setCropping(false)
     setCursor(0)
     onIndex(Math.max(0, Math.min(hits.length - 1, i)))
   }
@@ -141,6 +173,7 @@ export default function Detail(props: {
   // ------------------------------------------------------------ keyboard
 
   const onKey = (e: KeyboardEvent): void => {
+    if ((e.target as Element)?.closest('input, textarea, select')) return
     const mod = isMod(e)
     const lower = e.key.toLowerCase()
     const nativeSelection = !!window.getSelection()?.toString()
@@ -158,13 +191,13 @@ export default function Detail(props: {
     } else if (mod && lower === 'a' && !e.shiftKey) {
       e.preventDefault()
       setPicked(new Set(lines.map((_, i) => i)))
-    } else if (mod && lower === 'f' && !e.shiftKey) {
+    } else if (mod && lower === 'f' && e.shiftKey && semantic) {
       e.preventDefault()
       actions.similar(shot)
     } else if (mod && lower === 'p' && !e.shiftKey) {
       e.preventDefault()
       actions.pin(shot)
-    } else if (mod && (e.key === 'Delete' || e.key === 'Backspace')) {
+    } else if (mod && !e.repeat && (e.key === 'Delete' || e.key === 'Backspace')) {
       e.preventDefault()
       actions.trash([shot])
     }
@@ -184,7 +217,10 @@ export default function Detail(props: {
 
   const point = (e: React.PointerEvent): { x: number; y: number } => {
     const r = frame.current!.getBoundingClientRect()
-    return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))
+    }
   }
 
   const onDown = (e: React.PointerEvent): void => {
@@ -207,6 +243,10 @@ export default function Detail(props: {
       h: Math.abs(p.y - g.y)
     }
     setBand(r)
+    if (cropping) {
+      setCrop(r)
+      return
+    }
     const inside = lines.flatMap((l, i) => (overlaps(r, l) ? [i] : []))
     setPicked(new Set(g.add ? [...g.base, ...inside] : inside))
   }
@@ -215,7 +255,7 @@ export default function Detail(props: {
     const g = drag.current
     drag.current = null
     setBand(null)
-    if (!g || g.moved) return
+    if (cropping || !g || g.moved) return
     const p = point(e)
     const i = lines.findIndex((l) =>
       overlaps({ x: p.x - 0.004, y: p.y - 0.004, w: 0.008, h: 0.008 }, l)
@@ -233,39 +273,117 @@ export default function Detail(props: {
       return next
     })
 
+  const searchCrop = async (): Promise<void> => {
+    if (!crop || crop.w <= 0 || crop.h <= 0) return
+    setCroppingBusy(true)
+    try {
+      const image = frame.current?.querySelector('img')
+      if (!image?.naturalWidth) throw new Error('Wait for the original image to load.')
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(crop.w * image.naturalWidth))
+      canvas.height = Math.max(1, Math.round(crop.h * image.naturalHeight))
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Could not prepare this crop.')
+      context.drawImage(
+        image,
+        crop.x * image.naturalWidth,
+        crop.y * image.naturalHeight,
+        crop.w * image.naturalWidth,
+        crop.h * image.naturalHeight,
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      )
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('Could not encode crop.'))),
+          'image/png'
+        )
+      )
+      actions.crop(new Uint8Array(await blob.arrayBuffer()), `Crop of ${shot.name}`)
+    } catch (e) {
+      actions.say(`Couldn’t search crop: ${String(e)}`)
+    } finally {
+      setCroppingBusy(false)
+    }
+  }
+
   // ------------------------------------------------------------ render
 
   const copyLabel = picked.size ? `Copy ${plural(picked.size, 'line')}` : 'Copy text'
-  const rows: { icon: LucideIcon; label: string; combo?: string; run(): void; danger?: boolean }[] =
-    [
-      { icon: Copy, label: copyLabel, combo: 'Mod+C', run: copy },
-      {
-        icon: ImageIcon,
-        label: 'Copy image',
-        combo: 'Mod+Shift+C',
-        run: () => actions.copyImage(shot.id)
-      },
-      { icon: ExternalLink, label: 'Open', run: () => api.open(shot.id) },
-      {
-        icon: FolderOpen,
-        label: isMac() ? 'Show in Finder' : 'Show in folder',
-        run: () => api.reveal(shot.id)
-      },
-      { icon: ScanSearch, label: 'Find similar', combo: 'Mod+F', run: () => actions.similar(shot) },
-      {
-        icon: shot.pinned ? PinOff : Pin,
-        label: shot.pinned ? 'Unpin' : 'Pin',
-        combo: 'Mod+P',
-        run: () => actions.pin(shot)
-      },
-      {
-        icon: Trash2,
-        label: 'Move to Trash',
-        combo: trashKey(),
-        run: () => actions.trash([shot]),
-        danger: true
-      }
-    ]
+  const rows: {
+    icon: LucideIcon
+    label: string
+    combo?: string
+    run(): void
+    danger?: boolean
+    disabled?: boolean
+  }[] = [
+    { icon: Copy, label: copyLabel, combo: 'Mod+C', run: copy, disabled: !d?.text },
+    {
+      icon: ImageIcon,
+      label: 'Copy image',
+      combo: 'Mod+Shift+C',
+      run: () => actions.copyImage(shot.id)
+    },
+    { icon: ExternalLink, label: 'Open', run: () => api.open(shot.id) },
+    { icon: Download, label: 'Export original and metadata…', run: () => actions.export([shot]) },
+    ...(query.trim()
+      ? [
+          {
+            icon: ThumbsDown,
+            label: 'Not relevant to this search',
+            run: () => actions.reject(shot)
+          }
+        ]
+      : []),
+    ...(semantic
+      ? [
+          {
+            icon: Crop,
+            label: cropping ? 'Cancel crop' : 'Search part of this image',
+            run: () => {
+              setCropping(!cropping)
+              setCrop(null)
+              setPicked(new Set())
+            }
+          }
+        ]
+      : []),
+    {
+      icon: FolderOpen,
+      label: isMac() ? 'Show in Finder' : 'Show in folder',
+      run: () => api.reveal(shot.id)
+    },
+    ...(semantic
+      ? [
+          {
+            icon: ScanSearch,
+            label: 'Find similar',
+            combo: 'Mod+Shift+F',
+            run: () => actions.similar(shot)
+          }
+        ]
+      : []),
+    {
+      icon: shot.pinned ? PinOff : Pin,
+      label: shot.pinned ? 'Unpin' : 'Pin',
+      combo: 'Mod+P',
+      run: () => actions.pin(shot)
+    },
+    {
+      icon: Trash2,
+      // A folded burst goes as a whole.
+      label:
+        shot.groupSize > 1
+          ? `Move ${num(shot.groupSize)} shots to ${trashName()}`
+          : `Move to ${trashName()}`,
+      combo: trashKey(),
+      run: () => actions.trash([shot]),
+      danger: true
+    }
+  ]
 
   return (
     <div
@@ -307,6 +425,44 @@ export default function Detail(props: {
 
       <div className="detail-body">
         <div className="stage">
+          {cropping && (
+            <div className="crop-tools">
+              <p>Drag over the image, or set the crop as percentages.</p>
+              <div className="crop-inputs">
+                {(['x', 'y', 'w', 'h'] as const).map((key) => (
+                  <label key={key}>
+                    {{ x: 'Left', y: 'Top', w: 'Width', h: 'Height' }[key]}
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={Math.round(
+                        (crop?.[key] ?? (key === 'w' || key === 'h' ? 1 : 0)) * 100
+                      )}
+                      onChange={(e) =>
+                        setCrop((prev) => {
+                          const next = {
+                            ...(prev ?? { x: 0, y: 0, w: 1, h: 1 }),
+                            [key]: Math.max(0, Math.min(1, Number(e.target.value) / 100))
+                          }
+                          next.w = Math.min(next.w, 1 - next.x)
+                          next.h = Math.min(next.h, 1 - next.y)
+                          return next
+                        })
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <button
+                className="btn"
+                disabled={!crop?.w || !crop?.h || croppingBusy}
+                onClick={searchCrop}
+              >
+                {croppingBusy ? 'Preparing crop…' : 'Search this crop'}
+              </button>
+            </div>
+          )}
           <div
             className="frame"
             ref={frame}
@@ -319,28 +475,37 @@ export default function Detail(props: {
               setBand(null)
             }}
           >
+            {/* A new element per image, with the cached thumbnail underneath, so stepping with
+                arrows never shows the previous image stretched while the original decodes. */}
             <img
+              key={shot.id}
               src={shot.src}
+              crossOrigin="anonymous"
               alt=""
               draggable={false}
+              style={{ backgroundImage: `url("${shot.thumb}")` }}
               onLoad={(e) => {
+                e.currentTarget.style.backgroundImage = 'none' // transparent PNGs show no ghost
                 const { naturalWidth: w, naturalHeight: h } = e.currentTarget
                 if (!shot.width && w && h) setNatural({ id: shot.id, a: w / h })
               }}
             />
-            {hit.highlights.map((h, i) => (
-              <span key={`h${i}`} className="mark" style={box(h)} aria-hidden />
-            ))}
-            {lines.map((l, i) => (
-              <span
-                key={i}
-                className="ocr-line"
-                data-picked={picked.has(i) || undefined}
-                style={box(l)}
-                title={l.t}
-                aria-hidden
-              />
-            ))}
+            {!cropping &&
+              hit.highlights.map((h, i) => (
+                <span key={`h${i}`} className="mark" style={box(h)} aria-hidden />
+              ))}
+            {!cropping &&
+              lines.map((l, i) => (
+                <span
+                  key={i}
+                  className="ocr-line"
+                  data-picked={picked.has(i) || undefined}
+                  style={box(l)}
+                  title={l.t}
+                  aria-hidden
+                />
+              ))}
+            {cropping && crop && <span className="band crop-band" style={box(crop)} aria-hidden />}
             {band && <span className="band" style={box(band)} aria-hidden />}
           </div>
         </div>
@@ -362,9 +527,48 @@ export default function Detail(props: {
             </div>
           </section>
 
+          <section className="menu" aria-label="Actions">
+            {rows.map((r) => (
+              <button
+                key={r.label}
+                className="menu-row"
+                data-danger={r.danger || undefined}
+                disabled={r.disabled}
+                onClick={() => {
+                  void Promise.resolve()
+                    .then(r.run)
+                    .catch((e) => actions.say(`Couldn’t complete action: ${String(e)}`))
+                }}
+              >
+                <r.icon size={15} strokeWidth={1.75} aria-hidden />
+                <span>{r.label}</span>
+                {r.combo && <Kbd combo={r.combo} />}
+              </button>
+            ))}
+          </section>
+
+          {loadError && (
+            <p role="alert" className="error">
+              {loadError}
+            </p>
+          )}
+          {!!hit.evidence?.length && (
+            <section>
+              <h3>Why this result</h3>
+              <p className="muted">{hit.evidence.join(' · ')}</p>
+            </section>
+          )}
+          {d && (
+            <MetadataForm
+              key={d.id}
+              detail={d}
+              onSaved={(metadata) => setLoaded({ ...d, metadata })}
+            />
+          )}
+          {/* Below the menu: it arrives a moment later and must not push the buttons down. */}
           {!!d?.actions.length && (
             <section>
-              <h3>Found in this shot</h3>
+              <h3>Found in this image</h3>
               <div className="smart">
                 {d.actions.map((a) => {
                   const Icon = ACTION_ICON[a.kind]
@@ -372,7 +576,7 @@ export default function Detail(props: {
                     <button
                       key={a.kind + a.value}
                       className="smart-chip"
-                      onClick={() => runAction(a)}
+                      onClick={() => void runAction(a).catch((e) => actions.say(String(e)))}
                       title={`${ACTION_VERB[a.kind]}: ${a.value}`}
                     >
                       {a.kind === 'color' ? (
@@ -387,21 +591,6 @@ export default function Detail(props: {
               </div>
             </section>
           )}
-
-          <section className="menu" aria-label="Actions">
-            {rows.map((r) => (
-              <button
-                key={r.label}
-                className="menu-row"
-                data-danger={r.danger || undefined}
-                onClick={r.run}
-              >
-                <r.icon size={15} strokeWidth={1.75} aria-hidden />
-                <span>{r.label}</span>
-                {r.combo && <Kbd combo={r.combo} />}
-              </button>
-            ))}
-          </section>
 
           <section>
             <h3>
@@ -481,27 +670,120 @@ export default function Detail(props: {
               )}
             </dl>
           </section>
-
-          {shot.colors.length > 0 && (
-            <section>
-              <h3>Colors</h3>
-              <div className="colors">
-                {shot.colors.map((c) => (
-                  <button
-                    key={c}
-                    className="color"
-                    onClick={() => runAction({ kind: 'color', value: c })}
-                    title={`Copy ${c}`}
-                  >
-                    <span className="swatch" style={{ background: c }} aria-hidden />
-                    <span>{c}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
         </aside>
       </div>
     </div>
+  )
+}
+
+function MetadataForm({
+  detail,
+  onSaved
+}: {
+  detail: ShotDetail
+  onSaved(metadata: ShotDetail['metadata']): void
+}): React.JSX.Element {
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const metadata = detail.metadata ?? { note: '', tags: [], collections: [], sourceUrl: '' }
+  return (
+    <section>
+      <h3>Your context</h3>
+      <form
+        className="metadata-form"
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const form = new FormData(e.currentTarget)
+          const list = (name: string): string[] => [
+            ...new Set(
+              String(form.get(name) ?? '')
+                .split(',')
+                .map((v) => v.trim())
+                .filter(Boolean)
+            )
+          ]
+          const sourceUrl = String(form.get('sourceUrl') ?? '').trim()
+          if (sourceUrl && !/^https?:\/\//i.test(sourceUrl))
+            return setMessage('Use a full http or https source URL.')
+          setSaving(true)
+          try {
+            onSaved(
+              await api.updateMetadata(detail.id, {
+                note: String(form.get('note') ?? ''),
+                tags: list('tags'),
+                collections: list('collections'),
+                sourceUrl
+              })
+            )
+            setMessage('Saved on this device')
+          } catch (e) {
+            setMessage(`Couldn’t save: ${String(e)}`)
+          } finally {
+            setSaving(false)
+          }
+        }}
+      >
+        <label>
+          Note
+          <textarea
+            name="note"
+            maxLength={20000}
+            defaultValue={metadata.note}
+            rows={3}
+            placeholder="What you want to remember"
+          />
+        </label>
+        <label>
+          Tags
+          <input
+            name="tags"
+            maxLength={2000}
+            defaultValue={metadata.tags.join(', ')}
+            placeholder="Comma-separated tags"
+          />
+        </label>
+        <label>
+          Collections
+          <input
+            name="collections"
+            maxLength={2000}
+            defaultValue={metadata.collections.join(', ')}
+            placeholder="Comma-separated collections"
+          />
+        </label>
+        <label>
+          Source URL
+          <input
+            name="sourceUrl"
+            type="url"
+            maxLength={4096}
+            defaultValue={metadata.sourceUrl}
+            placeholder="https://…"
+          />
+        </label>
+        <p className="muted">
+          Source links are added by you. Search using tag:work or collection:ideas.
+        </p>
+        <div className="btn-row">
+          <button className="btn small" disabled={saving}>
+            {saving ? 'Saving…' : 'Save context'}
+          </button>
+          {metadata.sourceUrl && (
+            <button
+              type="button"
+              className="btn ghost small"
+              onClick={() =>
+                void api.openExternal(metadata.sourceUrl).catch((e) => setMessage(String(e)))
+              }
+            >
+              Open source
+            </button>
+          )}
+        </div>
+        <p role="status" className="muted">
+          {message}
+        </p>
+      </form>
+    </section>
   )
 }

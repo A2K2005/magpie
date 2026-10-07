@@ -53,7 +53,6 @@ export default function Onboarding(props: {
 
   return (
     <div className="onboarding">
-      <div className="onboarding-drag" />
       <div className="onboarding-inner" key={step} data-moved={moved || undefined}>
         <p className="step">Step {step + 1} of 3</p>
 

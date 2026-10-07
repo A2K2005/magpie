@@ -22,7 +22,9 @@ export function createTauriApi(): MagpieApi {
       // The rest of the request rides in a header (URL-encoded JSON).
       req.imageData
         ? invoke('search_image', req.imageData, {
-            headers: { 'x-magpie-req': encodeURIComponent(JSON.stringify({ ...req, imageData: undefined })) }
+            headers: {
+              'x-magpie-req': encodeURIComponent(JSON.stringify({ ...req, imageData: undefined }))
+            }
           })
         : invoke('search', { req }),
     getShot: (id) => invoke('get_shot', { id }),
@@ -41,6 +43,15 @@ export function createTauriApi(): MagpieApi {
     pin: (id, pinned) => invoke('pin', { id, pinned }),
     reindex: () => invoke('reindex'),
     pause: (paused) => invoke('pause', { paused }),
+    finishIndexing: (enabled) => invoke('finish_indexing', { enabled }),
+    retryFailed: () => invoke('retry_failed'),
+    repairModels: () => invoke('repair_models'),
+    failures: () => invoke('failures'),
+    updateMetadata: (id, metadata) => invoke('update_metadata', { id, metadata }),
+    setRelevant: (id, query, relevant) => invoke('set_relevant', { id, query, relevant }),
+    exportShots: (ids) => invoke('export_shots', { ids }),
+    exportDiagnostics: () => invoke('export_diagnostics'),
+    clearIndex: () => invoke('clear_index'),
     openExternal: (url) => invoke('open_external', { url }),
     hide: () => void invoke('hide_window'),
     startDrag: (id, path) => void invoke('start_drag', { id, path }),

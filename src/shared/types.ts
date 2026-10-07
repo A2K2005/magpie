@@ -50,6 +50,22 @@ export interface ShotDetail extends Shot {
   text: string
   lines: OcrLine[]
   actions: SmartAction[]
+  metadata: ShotMetadata
+}
+
+export interface ShotMetadata {
+  note: string
+  tags: string[]
+  collections: string[]
+  sourceUrl: string
+}
+
+export type SearchMode = 'all' | 'text' | 'visual'
+export interface SavedSearch {
+  id: string
+  name: string
+  query: string
+  mode: SearchMode
 }
 
 /**
@@ -64,6 +80,7 @@ export interface ShotDetail extends Shot {
 export type MatchKind = 'text' | 'partial' | 'near' | 'visual' | 'similar' | 'recent'
 
 export interface SearchHit {
+  evidence: string[]
   shot: Shot
   match: MatchKind
   score: number
@@ -74,6 +91,8 @@ export interface SearchHit {
 }
 
 export interface SearchRequest {
+  mode?: SearchMode
+  offset?: number
   /** Raw query, including filters: `invoice in:discord date:week -draft color:red has:url is:pinned`. */
   q: string
   /** Find shots that look like this indexed shot. */
@@ -109,6 +128,8 @@ export interface ActiveFilter {
     | 'width'
     | 'height'
     | 'sort'
+    | 'tag'
+    | 'collection'
   value: string
   /** Human label, such as "Last 7 days" or "Folder: discord". */
   label: string
@@ -117,6 +138,10 @@ export interface ActiveFilter {
 export type ModelState = 'off' | 'downloading' | 'loading' | 'ready' | 'error'
 
 export interface SearchResponse {
+  hasMore: boolean
+  nextOffset?: number | null
+  query: string
+  mode: SearchMode
   hits: SearchHit[]
   /** Number of text + near matches before the limit was applied. */
   textCount: number
@@ -131,6 +156,9 @@ export interface SearchResponse {
 }
 
 export interface IndexStatus {
+  waitingReason?: string | null
+  forceIndexing: boolean
+  warnings: string[]
   state: 'idle' | 'scanning' | 'indexing' | 'paused'
   total: number
   /** Shots with OCR done (searchable by text). */
@@ -146,6 +174,8 @@ export interface IndexStatus {
 }
 
 export interface Settings {
+  excludedFolders: string[]
+  savedSearches: SavedSearch[]
   folders: string[]
   /** Electron accelerator, such as `Alt+Shift+S`. */
   hotkey: string
@@ -211,6 +241,15 @@ export interface MagpieApi {
   pin(id: number, pinned: boolean): Promise<void>
   reindex(): Promise<void>
   pause(paused: boolean): Promise<void>
+  finishIndexing(enabled: boolean): Promise<void>
+  retryFailed(): Promise<void>
+  repairModels(): Promise<void>
+  failures(): Promise<{ id: number; name: string; error: string }[]>
+  updateMetadata(id: number, metadata: ShotMetadata): Promise<ShotMetadata>
+  setRelevant(id: number, query: string, relevant: boolean): Promise<void>
+  exportShots(ids: number[]): Promise<string | null>
+  exportDiagnostics(): Promise<string | null>
+  clearIndex(): Promise<void>
   openExternal(url: string): Promise<void>
   hide(): void
   /** Call from a tile's `dragstart` (after preventDefault) to drag the file into another app. */

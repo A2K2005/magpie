@@ -33,6 +33,11 @@ const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: '
 const fmtWeekday = new Intl.DateTimeFormat(undefined, { weekday: 'long' })
 const fmtTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const fmtShort = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+const fmtShortYear = new Intl.DateTimeFormat(undefined, {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric'
+})
 const fmtLong = new Intl.DateTimeFormat(undefined, {
   day: 'numeric',
   month: 'long',
@@ -53,14 +58,34 @@ export function dayGroup(t: number, now = Date.now()): string {
     : fmtMonthYear.format(d)
 }
 
-/** Compact time for captions: "2:14 PM", "Monday", "12 Sep". */
+/** Compact time for captions: "2:14 PM", "Monday", "12 Sep", "12 Sep 2023". */
 export function when(t: number, now = Date.now()): string {
   const today = startOfDay(now)
   if (t >= today) return fmtTime.format(t)
   if (t >= today - DAY) return `Yesterday, ${fmtTime.format(t)}`
   if (t >= today - 6 * DAY) return fmtWeekday.format(t)
-  return fmtShort.format(t)
+  return new Date(t).getFullYear() === new Date(now).getFullYear()
+    ? fmtShort.format(t)
+    : fmtShortYear.format(t)
 }
+
+/** Search filters, for the empty state and the Shortcuts tab. */
+export const FILTERS: [string, string][] = [
+  ['in:discord', 'Folder name contains “discord”'],
+  ['path:work', 'Full path contains “work”'],
+  ['ext:png;jpg', 'File type. Separate several with ;'],
+  ['size:>1mb', 'Also <200kb, 1mb..5mb, or tiny, small, medium, large, huge'],
+  ['width:>1920', 'Also height:. Same comparisons as size, without units'],
+  ['date:today', 'Also yesterday, week, month or year. dm: works too'],
+  ['before:aug', 'Before a month, or a date like 2026-08-01'],
+  ['after:2026-08-01', 'On or after a date'],
+  ['color:red', 'Mostly red. Any common color name works'],
+  ['has:url', 'Contains a link. Also email, phone or code'],
+  ['is:landscape', 'Also is:portrait or is:pinned'],
+  ['sort:largest', 'Also newest, oldest, smallest, name or relevance'],
+  ['-draft', 'Leave out images with this word'],
+  ['"exact phrase"', 'Words next to each other, in order']
+]
 
 export const longDate = (t: number): string => fmtLong.format(t)
 
@@ -75,7 +100,7 @@ export function statusText(s: IndexStatus | null, semantic: boolean, sharpText =
   else if (read < s.total) parts.push(`Reading ${num(read)} of ${num(s.total)}`)
   else parts.push(plural(s.total, 'image'))
   if (read >= s.total && visualLeft)
-    parts.push(`visual search ${num(s.embedded)} of ${num(s.total)}, finishes while you’re away`)
+    parts.push(`visual search ${num(s.embedded)} of ${num(s.total)}`)
   if (s.model.state === 'downloading')
     parts.push(`Downloading visual model ${Math.round((s.model.progress ?? 0) * 100)}%`)
   else if (s.model.state === 'loading') parts.push('Loading visual model…')
@@ -211,3 +236,22 @@ export function accelerator(e: KeyboardEvent): { value: string } | { error: stri
 
 /** Shortcut shown for "Move to trash"; both Delete and Backspace work everywhere. */
 export const trashKey = (): string => (isMac() ? 'Mod+Backspace' : 'Mod+Delete')
+
+/** What the OS calls its trash. */
+export const trashName = (): string => (window.api.platform === 'win32' ? 'Recycle Bin' : 'Trash')
+
+/** Native saved-search names are limited to 128 UTF-8 bytes. */
+export function savedSearchName(query: string): string {
+  const value = query.trim()
+  const encoder = new TextEncoder()
+  if (encoder.encode(value).length <= 128) return value
+  let name = ''
+  let bytes = 0
+  for (const character of value) {
+    const size = encoder.encode(character).length
+    if (bytes + size > 125) break
+    name += character
+    bytes += size
+  }
+  return `${name.trimEnd()}…`
+}

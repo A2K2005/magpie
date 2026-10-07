@@ -1,0 +1,126 @@
+{
+  "description": "Starter smoke corpus: 5 Wikimedia public-domain/CC0 photos (sources.json) plus 3 deterministic text fixtures generated locally. Small manually labeled examples; not representative production relevance, no private images. OCR text is supplied ground truth, not actual extraction. Holdout negative terms selected after initial raw-label baseline, before reading prompt-expanded results.",
+  "images": [
+    {
+      "id": "samoyed",
+      "path": "images/001.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "corgi",
+      "path": "images/002.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "cat-towel",
+      "path": "images/003.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "cat-playing",
+      "path": "images/004.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "bicycle",
+      "path": "images/005.jpg"
+    },
+    {
+      "id": "dog-text",
+      "path": "images/006.png",
+      "text": "Pet care notes Dog food delivery Review nutritional information No animals are pictured on this screen."
+    },
+    {
+      "id": "invoice",
+      "path": "images/007.png",
+      "text": "Invoice #42 Amount due: 250.00 Payment terms: net 30 Customer: Example Company"
+    },
+    {
+      "id": "code",
+      "path": "images/008.png",
+      "text": "Code review function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }"
+    }
+  ],
+  "queries": [
+    {
+      "query": "frog",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "helicopter",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "airplane",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "car",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "pizza",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "elephant",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "receipt",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "ocean",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "a red sports car",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    },
+    {
+      "query": "a frog sitting on a leaf",
+      "mode": "visual",
+      "relevant": [],
+      "k": 8
+    }
+  ]
+}

@@ -31,6 +31,7 @@ const TRASH_DELAY: Duration = Duration::from_secs(8);
 struct AppState {
     engine: Arc<Engine>,
     settings: Mutex<Settings>,
+    settings_update: Mutex<()>,
     /// Shots hidden now, moved to the OS trash after TRASH_DELAY unless undone.
     pending_trash: Mutex<Option<(u64, Vec<i64>)>>,
     trash_seq: AtomicU64,
@@ -85,11 +86,10 @@ fn create_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-features=NetworkServiceInProcess2 \
          --disable-gpu --disable-gpu-compositing --in-process-gpu",
     );
-    let b = {
-        let dark = app.state::<AppState>().settings.lock().unwrap().theme != "light";
-        b.background_color(if dark { tauri::window::Color(18, 18, 18, 255) } else { tauri::window::Color(247, 246, 243, 255) })
-    };
+    let theme = app.state::<AppState>().settings.lock().unwrap().theme.clone();
+    let b = b.theme(window_theme(&theme)).background_color(window_color(theme != "light"));
     let w = b.build()?;
+    apply_theme(&w, &theme); // "system" on a light OS: the guess above was dark
     let handle = app.clone();
     w.on_window_event(move |e| match e {
         WindowEvent::Focused(false) => {
@@ -253,7 +253,8 @@ fn toggle(app: &AppHandle) {
 
 #[tauri::command]
 async fn search(state: State<'_, AppState>, req: SearchRequest) -> Res<SearchResponse> {
-    state.engine.search(&req, None).map_err(err)
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.search(&req, None).map_err(err)).await.map_err(err)?
 }
 
 /// Pasted image bytes arrive as the raw request body.
@@ -267,7 +268,9 @@ async fn search_image(state: State<'_, AppState>, request: tauri::ipc::Request<'
         .and_then(|v| v.to_str().ok())
         .and_then(|v| serde_json::from_str(&percent_decode(v)).ok())
         .unwrap_or_default();
-    state.engine.search(&req, Some(bytes)).map_err(err)
+    let bytes = bytes.clone();
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.search(&req, Some(&bytes)).map_err(err)).await.map_err(err)?
 }
 
 fn percent_decode(s: &str) -> String {
@@ -309,8 +312,30 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
     state.settings.lock().unwrap().clone()
 }
 
+/// The settings theme as a window theme; None follows the OS.
+fn window_theme(theme: &str) -> Option<tauri::Theme> {
+    match theme {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    }
+}
+
+/// The page background (`--bg` in styles.css), shown at the edges while the window resizes.
+fn window_color(dark: bool) -> tauri::window::Color {
+    if dark { tauri::window::Color(18, 18, 18, 255) } else { tauri::window::Color(247, 246, 243, 255) }
+}
+
+/// Title bar and window color follow the app's theme, not only the OS's.
+fn apply_theme(w: &WebviewWindow, theme: &str) {
+    let _ = w.set_theme(window_theme(theme));
+    let dark = w.theme().map_or(true, |t| t == tauri::Theme::Dark);
+    let _ = w.set_background_color(Some(window_color(dark)));
+}
+
 #[tauri::command]
 async fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: serde_json::Value) -> Res<Settings> {
+    let _update = state.settings_update.lock().unwrap();
     let prev = state.settings.lock().unwrap().clone();
     let mut merged = serde_json::to_value(&prev).map_err(err)?;
     if let (Some(m), Some(p)) = (merged.as_object_mut(), patch.as_object()) {
@@ -319,6 +344,16 @@ async fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: serde_j
         }
     }
     let mut next: Settings = serde_json::from_value(merged).map_err(err)?;
+    if !["folders", "everywhere"].contains(&next.scope.as_str()) || !["system", "light", "dark"].contains(&next.theme.as_str()) {
+        return Err("Invalid settings value".into());
+    }
+    if next.saved_searches.len() > 100 || next.saved_searches.iter().any(|s| s.name.len() > 128 || s.query.len() > 8192 || !["all","text","visual"].contains(&s.mode.as_str())) {
+        return Err("Saved searches exceed supported limits".into());
+    }
+    if next.launch_at_login != prev.launch_at_login {
+        let al = app.autolaunch();
+        if next.launch_at_login { al.enable() } else { al.disable() }.map_err(err)?;
+    }
     if next.hotkey != prev.hotkey && !register_hotkey(&app, &next.hotkey, Some(&prev.hotkey)) {
         next.hotkey = prev.hotkey.clone();
     }
@@ -332,19 +367,28 @@ async fn set_settings(app: AppHandle, state: State<'_, AppState>, patch: serde_j
             next.copy_latest_hotkey = prev.copy_latest_hotkey.clone();
         }
     }
-    if next.launch_at_login != prev.launch_at_login {
-        let al = app.autolaunch();
-        let _ = if next.launch_at_login { al.enable() } else { al.disable() };
+    if let Err(e) = settings::save(&app, &next) {
+        if next.hotkey != prev.hotkey { register_hotkey(&app, &prev.hotkey, Some(&next.hotkey)); }
+        if next.copy_latest_hotkey != prev.copy_latest_hotkey {
+            let gs = app.global_shortcut();
+            if !next.copy_latest_hotkey.is_empty() { let _ = gs.unregister(next.copy_latest_hotkey.as_str()); }
+            if !prev.copy_latest_hotkey.is_empty() { let _ = gs.register(prev.copy_latest_hotkey.as_str()); }
+        }
+        if next.launch_at_login != prev.launch_at_login {
+            let al = app.autolaunch();
+            let restored = if prev.launch_at_login { al.enable() } else { al.disable() };
+            if let Err(rollback) = restored { return Err(format!("Settings could not be saved: {e}. Login setting could not be restored: {rollback}")); }
+        }
+        return Err(format!("Settings could not be saved: {e}"));
     }
-    if next.folders != prev.folders
-        || next.semantic != prev.semantic
-        || next.sharp_text != prev.sharp_text
-        || next.scope != prev.scope
-        || next.save_clipboard != prev.save_clipboard
-    {
+    if next.theme != prev.theme {
+        if let Some(w) = window(&app) { apply_theme(&w, &next.theme); }
+    }
+    if next.folders != prev.folders || next.excluded_folders != prev.excluded_folders
+        || next.semantic != prev.semantic || next.sharp_text != prev.sharp_text
+        || next.scope != prev.scope || next.save_clipboard != prev.save_clipboard {
         configure(&state, &next);
     }
-    settings::save(&app, &next);
     *state.settings.lock().unwrap() = next.clone();
     watch_clipboard(&app);
     Ok(next)
@@ -498,10 +542,72 @@ fn configure(st: &AppState, s: &Settings) {
         let _ = std::fs::create_dir_all(&st.clip_dir);
         folders.push(st.clip_dir.to_string_lossy().into_owned());
     }
-    st.engine.configure(&folders, s.semantic, s.sharp_text, s.scope == "everywhere");
+    st.engine.configure(&folders, s.semantic, s.sharp_text, s.scope == "everywhere", &s.excluded_folders);
 }
 
 // ---------- assets ----------
+
+#[tauri::command]
+fn finish_indexing(state: State<'_, AppState>, enabled: bool) { state.engine.finish_indexing(enabled); }
+#[tauri::command]
+fn retry_failed(state: State<'_, AppState>) { state.engine.retry_failed(); }
+#[tauri::command]
+fn repair_models(state: State<'_, AppState>) { state.engine.repair_models(); }
+#[tauri::command]
+fn failures(state: State<'_, AppState>) -> Res<Vec<IndexFailure>> { state.engine.failures().map_err(err) }
+#[tauri::command]
+fn update_metadata(state: State<'_, AppState>, id: i64, metadata: ShotMetadata) -> Res<ShotMetadata> {
+    state.engine.update_metadata(id, metadata).map_err(err)
+}
+#[tauri::command]
+fn set_relevant(state: State<'_, AppState>, id: i64, query: String, relevant: bool) -> Res<()> {
+    state.engine.set_relevant(id, &query, relevant).map_err(err)
+}
+
+#[tauri::command]
+async fn export_shots(app: AppHandle, state: State<'_, AppState>, ids: Vec<i64>) -> Res<Option<String>> {
+    state.dialog_open.store(true, Relaxed);
+    let folder = app.dialog().file().set_title("Export originals and metadata to a new folder").blocking_pick_folder();
+    state.dialog_open.store(false, Relaxed);
+    let Some(folder) = folder.and_then(|f| f.into_path().ok()) else { return Ok(None) };
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.export_shots(&ids, &folder).map(Some).map_err(err)).await.map_err(err)?
+}
+
+#[tauri::command]
+fn export_diagnostics(app: AppHandle, state: State<'_, AppState>) -> Res<Option<String>> {
+    state.dialog_open.store(true, Relaxed);
+    let file = app.dialog().file().set_title("Save diagnostics (no images, paths or search text)")
+        .set_file_name("magpie-diagnostics.json").blocking_save_file();
+    state.dialog_open.store(false, Relaxed);
+    let Some(file) = file.and_then(|f| f.into_path().ok()) else { return Ok(None) };
+    let s = state.engine.status();
+    let report = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"), "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
+        "generatedAt": chrono::Utc::now().to_rfc3339(), "state":s.state, "images":s.total,
+        "textProcessed":s.ocr_done,"embedded":s.embedded,"failed":s.errors,
+        "visualModel":s.model.state,"textModel":s.text_model.state,
+        "warningCount":s.warnings.len(),"embeddingVersion":engine::clip::EMBEDDING_VERSION
+    });
+    std::fs::write(&file, serde_json::to_vec_pretty(&report).map_err(err)?).map_err(err)?;
+    Ok(Some(file.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn clear_index(app: AppHandle, state: State<'_, AppState>) -> Res<()> {
+    {
+        let _update = state.settings_update.lock().unwrap();
+        let mut s = state.settings.lock().unwrap().clone();
+        s.folders.clear();
+        s.scope = "folders".into();
+        s.save_clipboard = false;
+        settings::save(&app, &s).map_err(err)?;
+        configure(&state, &s);
+        *state.settings.lock().unwrap() = s;
+    }
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn_blocking(move || engine.clear_index().map_err(err)).await.map_err(err)?
+}
 
 /// At most two thumbnails are made at once: a grid of unread photos must not decode 200 of them
 /// in parallel (a 12-megapixel photo decodes to ~36 MB).
@@ -680,7 +786,9 @@ pub fn run() {
             reindex,
             pause,
             hide_window,
-            start_drag
+            start_drag,
+            finish_indexing, retry_failed, repair_models, failures, update_metadata, set_relevant,
+            export_shots, export_diagnostics, clear_index
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -713,16 +821,13 @@ pub fn run() {
                     }
                 }),
             )?);
-            let mut s = settings::load(&handle);
-            if std::env::var_os("MAGPIE_USER_DATA").is_some() {
-                // Tests keep their settings next to their data.
-                s = std::fs::read_to_string(data.join("settings.json")).ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or(s);
-            }
+            let s = settings::load(&handle)?;
             let hotkey = s.hotkey.clone();
             let copy_latest = s.copy_latest_hotkey.clone();
             app.manage(AppState {
                 engine: engine.clone(),
                 settings: Mutex::new(s),
+                settings_update: Mutex::new(()),
                 pending_trash: Mutex::new(None),
                 trash_seq: AtomicU64::new(0),
                 dialog_open: AtomicBool::new(false),

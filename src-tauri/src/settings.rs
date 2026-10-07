@@ -6,17 +6,33 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 fn file(app: &AppHandle) -> PathBuf {
-    app.path().app_data_dir().unwrap_or_default().join("settings.json")
+    std::env::var_os("MAGPIE_USER_DATA").map(PathBuf::from)
+        .unwrap_or_else(|| app.path().app_data_dir().expect("application data directory"))
+        .join("settings.json")
 }
 
-pub fn load(app: &AppHandle) -> Settings {
-    std::fs::read_to_string(file(app)).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
-}
-
-pub fn save(app: &AppHandle, s: &Settings) {
-    if let Ok(json) = serde_json::to_string_pretty(s) {
-        let _ = std::fs::write(file(app), json);
+pub fn load(app: &AppHandle) -> anyhow::Result<Settings> {
+    match std::fs::read_to_string(file(app)) {
+        Ok(json) => Ok(serde_json::from_str(&json)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(e) => Err(e.into()),
     }
+}
+
+pub fn save(app: &AppHandle, s: &Settings) -> anyhow::Result<()> {
+    save_to(&file(app), s)
+}
+
+fn save_to(path: &Path, s: &Settings) -> anyhow::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("Invalid settings path"))?)?;
+    let pending = path.with_extension("json.pending");
+    let mut f = std::fs::File::create(&pending)?;
+    f.write_all(&serde_json::to_vec_pretty(s)?)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&pending, path)?;
+    Ok(())
 }
 
 /// Where common screenshot tools save on this OS. Existing folders only.
@@ -91,4 +107,45 @@ pub fn suggest(app: &AppHandle) -> Vec<FolderSuggestion> {
             (count > 0).then(|| FolderSuggestion { path: path.to_string_lossy().into_owned(), count, label })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name:&str)->PathBuf {
+        let dir=std::env::temp_dir().join(format!("glint-settings-{}-{name}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("settings.json")
+    }
+
+    #[test]
+    fn sequential_save_replaces_existing_file_and_retains_new_fields() {
+        let path=fixture("replace");
+        let mut settings=Settings { theme:"light".into(),..Default::default() };
+        save_to(&path,&settings).unwrap();
+        settings.theme="dark".into();
+        settings.excluded_folders=vec!["C:\\Pictures\\Private".into()];
+        settings.saved_searches=vec![crate::types::SavedSearch{id:"dogs".into(),name:"Dogs".into(),query:"dog folder:Pictures".into(),mode:"visual".into()}];
+        settings.save_clipboard=true;
+        save_to(&path,&settings).unwrap();
+        let loaded:Settings=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded).unwrap(),serde_json::to_value(&settings).unwrap());
+        assert!(!path.with_extension("json.pending").exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn failed_pending_write_keeps_previous_settings_intact() {
+        let path=fixture("failed-write");
+        let previous=Settings{theme:"light".into(),..Default::default()};
+        save_to(&path,&previous).unwrap();
+        let bytes=std::fs::read(&path).unwrap();
+        std::fs::create_dir(path.with_extension("json.pending")).unwrap();
+        assert!(save_to(&path,&Settings{theme:"dark".into(),..Default::default()}).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);
+        let loaded:Settings=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(loaded.theme,"light");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 }

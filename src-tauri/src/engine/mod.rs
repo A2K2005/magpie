@@ -2,12 +2,14 @@
 //! At rest it holds a database connection and a sleeping thread. CLIP, PaddleOCR and the vector cache
 //! load on demand and are dropped when unused.
 
+pub mod capture;
 pub mod clip;
 pub mod colors;
 pub mod db;
 mod fetch;
 pub mod image;
 mod indexer;
+pub mod metadata;
 pub use indexer::is_image;
 pub mod ocr;
 mod onnx;
@@ -20,7 +22,7 @@ use clip::Clip;
 use rusqlite::Connection;
 use search::{Img, Semantic, Vectors, Vocab};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -35,7 +37,12 @@ pub(crate) enum Msg {
     Configure,
     Kick,
     Fs(PathBuf),
+    Rescan,
+    Warning(String),
     Reindex,
+    RetryFailed,
+    RepairModels,
+    Clear(Sender<anyhow::Result<()>>),
     Remove(Vec<i64>),
 }
 
@@ -48,6 +55,12 @@ pub struct Dirs {
 
 pub struct Shared {
     pub folders: Mutex<Vec<PathBuf>>,
+    pub excluded_folders: Mutex<Vec<PathBuf>>,
+    pub force_indexing: AtomicBool,
+    pub warnings: Mutex<Vec<String>>,
+    model_io: Mutex<()>,
+    model_generation: AtomicU64,
+    text_generation: AtomicU64,
     pub semantic: AtomicBool,
     /// Re-read text with PaddleOCR (Windows).
     pub sharp: AtomicBool,
@@ -90,7 +103,11 @@ pub struct Engine {
 
 impl Engine {
     pub fn start(data: &Path, emit: Box<dyn Fn(Event) + Send + Sync>) -> anyhow::Result<Self> {
-        let dirs = Dirs { data: data.to_path_buf(), thumbs: data.join("thumbs"), models: data.join("models") };
+        let dirs = Dirs {
+            data: data.to_path_buf(),
+            thumbs: data.join("thumbs"),
+            models: data.join("models"),
+        };
         std::fs::create_dir_all(&dirs.thumbs)?;
         std::fs::create_dir_all(&dirs.models)?;
         let read = db::open(&dirs.data.join("magpie.db"))?;
@@ -98,6 +115,12 @@ impl Engine {
         read.execute("UPDATE shots SET hidden = 0 WHERE hidden = 1", [])?;
         let shared = Arc::new(Shared {
             folders: Mutex::new(vec![]),
+            excluded_folders: Mutex::new(vec![]),
+            force_indexing: AtomicBool::new(false),
+            warnings: Mutex::new(vec![]),
+            model_io: Mutex::new(()),
+            model_generation: AtomicU64::new(0),
+            text_generation: AtomicU64::new(0),
             semantic: AtomicBool::new(false),
             sharp: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -105,8 +128,16 @@ impl Engine {
             user_idle: AtomicBool::new(true),
             busy: AtomicBool::new(false),
             scanning: AtomicBool::new(false),
-            model: Mutex::new(ModelInfo { state: "off", progress: None, error: None }),
-            text_model: Mutex::new(ModelInfo { state: "off", progress: None, error: None }),
+            model: Mutex::new(ModelInfo {
+                state: "off",
+                progress: None,
+                error: None,
+            }),
+            text_model: Mutex::new(ModelInfo {
+                state: "off",
+                progress: None,
+                error: None,
+            }),
             query_clip: Mutex::new(Clip::new(dirs.models.clone(), false)),
             vectors: Mutex::new(None),
             vocab: Mutex::new(None),
@@ -114,12 +145,24 @@ impl Engine {
         });
         let (tx, rx) = channel();
         indexer::spawn(dirs.clone(), shared.clone(), tx.clone(), rx);
-        Ok(Self { dirs, read: Mutex::new(read), shared, tx })
+        Ok(Self {
+            dirs,
+            read: Mutex::new(read),
+            shared,
+            tx,
+        })
     }
 
     /// `everywhere` adds every fixed drive (Windows) or the home folder (macOS) to `folders`.
     /// `sharp` only takes effect on Windows: Apple Vision is already as accurate as PaddleOCR.
-    pub fn configure(&self, folders: &[String], semantic: bool, sharp: bool, everywhere: bool) {
+    pub fn configure(
+        &self,
+        folders: &[String],
+        semantic: bool,
+        sharp: bool,
+        everywhere: bool,
+        excluded_folders: &[String],
+    ) {
         let mut norm: Vec<PathBuf> = folders.iter().map(PathBuf::from).collect();
         if everywhere {
             norm.extend(crate::platform::everywhere_roots());
@@ -127,51 +170,59 @@ impl Engine {
         norm.sort();
         norm.dedup();
         *self.shared.folders.lock().unwrap() = norm;
+        *self.shared.excluded_folders.lock().unwrap() =
+            excluded_folders.iter().map(PathBuf::from).collect();
         if semantic && !self.shared.semantic.swap(true, Relaxed) {
             self.fetch(|s| &s.model, &clip::FILES);
         } else if !semantic {
             self.shared.semantic.store(false, Relaxed);
-            *self.shared.model.lock().unwrap() = ModelInfo { state: "off", progress: None, error: None };
+            self.shared.model_generation.fetch_add(1, Relaxed);
+            *self.shared.model.lock().unwrap() = ModelInfo {
+                state: "off",
+                progress: None,
+                error: None,
+            };
         }
         let sharp = sharp && cfg!(windows);
         if sharp && !self.shared.sharp.swap(true, Relaxed) {
             self.fetch(|s| &s.text_model, &ocr::paddle::FILES);
         } else if !sharp {
             self.shared.sharp.store(false, Relaxed);
-            *self.shared.text_model.lock().unwrap() = ModelInfo { state: "off", progress: None, error: None };
+            self.shared.text_generation.fetch_add(1, Relaxed);
+            *self.shared.text_model.lock().unwrap() = ModelInfo {
+                state: "off",
+                progress: None,
+                error: None,
+            };
         }
         let _ = self.tx.send(Msg::Configure);
     }
 
     /// Marks a model ready, downloading its files first if any are missing.
-    fn fetch(&self, slot: fn(&Shared) -> &Mutex<ModelInfo>, files: &'static [(&'static str, &'static str, u64)]) {
-        let set = move |shared: &Shared, state: &'static str, progress: Option<f64>, error: Option<String>| {
-            *slot(shared).lock().unwrap() = ModelInfo { state, progress, error };
-        };
-        if files.iter().all(|(f, _, _)| self.dirs.models.join(f).exists()) {
-            set(&self.shared, "ready", None, None);
-            return;
-        }
-        set(&self.shared, "downloading", Some(0.0), None);
-        let (shared, dir, tx) = (self.shared.clone(), self.dirs.models.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let report = |p: f64| {
-                set(&shared, "downloading", Some(p), None);
-                let _ = tx.send(Msg::Kick); // the indexer emits throttled status
-            };
-            match fetch::download(&dir, files, &report) {
-                Ok(()) => set(&shared, "ready", None, None),
-                Err(e) => set(&shared, "error", None, Some(e.to_string())),
-            }
-            let _ = tx.send(Msg::Kick);
-        });
+    fn fetch(
+        &self,
+        slot: fn(&Shared) -> &Mutex<ModelInfo>,
+        files: &'static [(&'static str, &'static str, u64)],
+    ) {
+        fetch_models(
+            self.shared.clone(),
+            self.dirs.models.clone(),
+            self.tx.clone(),
+            slot,
+            files,
+            false,
+        );
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.read.lock().unwrap()
     }
 
-    pub fn search(&self, req: &SearchRequest, bytes: Option<&[u8]>) -> anyhow::Result<SearchResponse> {
+    pub fn search(
+        &self,
+        req: &SearchRequest,
+        bytes: Option<&[u8]>,
+    ) -> anyhow::Result<SearchResponse> {
         let conn = self.conn();
         Ok(search::run(&conn, req, bytes.map(Img::Bytes), self)?)
     }
@@ -191,26 +242,41 @@ impl Engine {
     pub fn paths(&self, ids: &[i64]) -> Vec<Option<String>> {
         let conn = self.conn();
         ids.iter()
-            .map(|id| conn.query_row("SELECT path FROM shots WHERE id = ?", [id], |r| r.get(0)).ok())
+            .map(|id| {
+                conn.query_row("SELECT path FROM shots WHERE id = ?", [id], |r| r.get(0))
+                    .ok()
+            })
             .collect()
     }
 
     /// Path of the most recently saved screenshot.
     pub fn latest_path(&self) -> Option<String> {
-        self.conn().query_row("SELECT path FROM shots WHERE hidden = 0 ORDER BY mtime DESC LIMIT 1", [], |r| r.get(0)).ok()
+        self.conn()
+            .query_row(
+                "SELECT path FROM shots WHERE hidden = 0 ORDER BY mtime DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok()
     }
 
     pub fn set_hidden(&self, ids: &[i64], hidden: bool) {
         let conn = self.conn();
         for id in ids {
-            let _ = conn.execute("UPDATE shots SET hidden = ? WHERE id = ?", (i64::from(hidden), id));
+            let _ = conn.execute(
+                "UPDATE shots SET hidden = ? WHERE id = ?",
+                (i64::from(hidden), id),
+            );
         }
         self.shared.invalidate_vectors();
         let _ = self.tx.send(Msg::Kick);
     }
 
     pub fn pin(&self, id: i64, pinned: bool) {
-        let _ = self.conn().execute("UPDATE shots SET pinned = ? WHERE id = ?", (i64::from(pinned), id));
+        let _ = self.conn().execute(
+            "UPDATE shots SET pinned = ? WHERE id = ?",
+            (i64::from(pinned), id),
+        );
     }
 
     pub fn remove(&self, ids: Vec<i64>) {
@@ -219,6 +285,39 @@ impl Engine {
 
     pub fn reindex(&self) {
         let _ = self.tx.send(Msg::Reindex);
+    }
+
+    pub fn finish_indexing(&self, enabled: bool) {
+        self.shared.force_indexing.store(enabled, Relaxed);
+        let _ = self.tx.send(Msg::Kick);
+    }
+
+    pub fn retry_failed(&self) {
+        let _ = self.tx.send(Msg::RetryFailed);
+    }
+
+    pub fn repair_models(&self) {
+        let _ = self.tx.send(Msg::RepairModels);
+    }
+
+    pub fn clear_index(&self) -> anyhow::Result<()> {
+        let (tx, rx) = channel();
+        self.tx.send(Msg::Clear(tx))?;
+        rx.recv()?
+    }
+
+    pub fn failures(&self) -> anyhow::Result<Vec<IndexFailure>> {
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT id, name, coalesce(error, 'Text recognition failed') FROM shots WHERE hidden = 0 AND (stage = -1 OR ocr = -1 OR error IS NOT NULL) ORDER BY mtime DESC")?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(IndexFailure {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    error: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn pause(&self, paused: bool) {
@@ -237,19 +336,115 @@ impl Engine {
         if self.shared.semantic_ready() {
             let shared = self.shared.clone();
             std::thread::spawn(move || {
-                let _ = shared.query_clip.lock().unwrap().embed_text("");
+                let mut clip = shared.query_clip.lock().unwrap();
+                if shared.semantic_ready() {
+                    if let Err(e) = clip.embed_text("") {
+                        *shared.model.lock().unwrap() = ModelInfo {
+                            state: "error",
+                            progress: None,
+                            error: Some(e.to_string()),
+                        };
+                    }
+                }
             });
         }
     }
 }
 
+fn model_generation(shared: &Shared, slot: fn(&Shared) -> &Mutex<ModelInfo>) -> &AtomicU64 {
+    if std::ptr::eq(slot(shared), &shared.model) {
+        &shared.model_generation
+    } else {
+        &shared.text_generation
+    }
+}
+
+fn fetch_models(
+    shared: Arc<Shared>,
+    dir: PathBuf,
+    tx: Sender<Msg>,
+    slot: fn(&Shared) -> &Mutex<ModelInfo>,
+    files: &'static [(&'static str, &'static str, u64)],
+    repair: bool,
+) {
+    let generation = model_generation(&shared, slot).fetch_add(1, Relaxed) + 1;
+    *slot(&shared).lock().unwrap() = ModelInfo {
+        state: "downloading",
+        progress: Some(0.0),
+        error: None,
+    };
+    std::thread::spawn(move || {
+        let _guard = shared.model_io.lock().unwrap();
+        if model_generation(&shared, slot).load(Relaxed) != generation {
+            return;
+        }
+        let result = (|| -> anyhow::Result<()> {
+            if repair {
+                for (file, _, _) in files {
+                    let path = dir.join(file);
+                    if path.exists() {
+                        std::fs::remove_file(path)?;
+                    }
+                }
+            }
+            fetch::download(&dir, files, &|p| {
+                let mut model = slot(&shared).lock().unwrap();
+                if model_generation(&shared, slot).load(Relaxed) != generation {
+                    return;
+                }
+                *model = ModelInfo {
+                    state: "downloading",
+                    progress: Some(p),
+                    error: None,
+                };
+                let _ = tx.send(Msg::Kick);
+            })
+        })();
+        let mut model = slot(&shared).lock().unwrap();
+        if model_generation(&shared, slot).load(Relaxed) == generation {
+            *model = match result {
+                Ok(()) => ModelInfo {
+                    state: "ready",
+                    progress: None,
+                    error: None,
+                },
+                Err(e) => ModelInfo {
+                    state: "error",
+                    progress: None,
+                    error: Some(e.to_string()),
+                },
+            };
+        }
+        let _ = tx.send(Msg::Kick);
+    });
+}
+
 impl Semantic for Engine {
     fn state(&self) -> &'static str {
-        if self.shared.semantic.load(Relaxed) { self.shared.model.lock().unwrap().state } else { "off" }
+        if self.shared.semantic.load(Relaxed) {
+            self.shared.model.lock().unwrap().state
+        } else {
+            "off"
+        }
     }
 
     fn embed_text(&self, q: &str) -> Option<Vec<f32>> {
-        self.shared.query_clip.lock().unwrap().embed_text(q).ok()
+        let mut clip = self.shared.query_clip.lock().unwrap();
+        if !self.shared.semantic_ready() {
+            return None;
+        }
+        match clip.embed_text(q) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                *self.shared.model.lock().unwrap() = ModelInfo {
+                    state: "error",
+                    progress: None,
+                    error: Some(e.to_string()),
+                };
+                let _ = self.tx.send(Msg::Kick);
+                None
+            }
+        }
     }
 
     fn embed_image(&self, img: Img) -> Option<Vec<f32>> {
@@ -258,7 +453,22 @@ impl Semantic for Engine {
             Img::Bytes(b) => image::decode_bytes(b).ok()?,
         };
         let px = image::clip_pixels(&decoded);
-        self.shared.query_clip.lock().unwrap().embed_images(&[px]).ok()?.pop()
+        let mut clip = self.shared.query_clip.lock().unwrap();
+        if !self.shared.semantic_ready() {
+            return None;
+        }
+        match clip.embed_images(&[px]) {
+            Ok(mut v) => v.pop(),
+            Err(e) => {
+                *self.shared.model.lock().unwrap() = ModelInfo {
+                    state: "error",
+                    progress: None,
+                    error: Some(e.to_string()),
+                };
+                let _ = self.tx.send(Msg::Kick);
+                None
+            }
+        }
     }
 
     fn with_vectors<R>(&self, conn: &Connection, f: impl FnOnce(&Vectors) -> R) -> Option<R> {

@@ -12,6 +12,8 @@
     "lint": "eslint --cache .",
     "format": "prettier --write src",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
+    "test:renderer": "node tests/renderer-contract.mjs",
+    "test:capture": "node --test tests/browser-capture.mjs",
     "icons": "tauri icon build/icon.svg",
     "tauri": "tauri"
   },

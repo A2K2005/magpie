@@ -38,22 +38,42 @@ function useTheme(theme: Settings['theme'] | undefined): void {
 }
 
 export default function App(): React.JSX.Element {
+  const [startupError, setStartupError] = useState('')
   const [settings, setSettings] = useState<Settings | null>(null)
   const [status, setStatus] = useState<IndexStatus | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  /** The open settings tab, or null when settings are closed. */
+  const [settingsOpen, setSettingsOpen] = useState<false | 'library' | 'search'>(false)
+
+  const load = useCallback(() => {
+    void api
+      .getSettings()
+      .then((value) => {
+        setSettings(value)
+        setStartupError('')
+      })
+      .catch((e) => setStartupError(`Couldn’t load settings: ${String(e)}`))
+    void api
+      .status()
+      .then(setStatus)
+      .catch((e) => setStartupError(`Couldn’t read index status: ${String(e)}`))
+  }, [])
 
   useEffect(() => {
-    api.getSettings().then(setSettings)
-    api.status().then(setStatus)
-    const offs = [api.onStatus(setStatus), api.onOpenSettings(() => setSettingsOpen(true))]
-    return () => offs.forEach((off) => off())
-  }, [])
+    load()
+    const offs = [api.onStatus(setStatus), api.onOpenSettings(() => setSettingsOpen('library'))]
+    // Load settings after first paint, so opening them never shows a blank frame.
+    const warm = setTimeout(() => void import('./components/Settings'), 1500)
+    return () => {
+      clearTimeout(warm)
+      offs.forEach((off) => off())
+    }
+  }, [load])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (isMod(e) && e.key === ',') {
         e.preventDefault()
-        setSettingsOpen(true)
+        setSettingsOpen('library')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -77,16 +97,28 @@ export default function App(): React.JSX.Element {
     )
   return (
     <>
+      {startupError && (
+        <div className="startup-error" role="alert">
+          <span>{startupError}</span>
+          <button className="btn small" onClick={load}>
+            Try again
+          </button>
+        </div>
+      )}
       <Search
+        settings={settings}
+        onSettings={update}
         active={!settingsOpen}
         status={status}
         semantic={settings?.semantic ?? true}
         sharpText={settings?.sharpText ?? false}
-        onOpenSettings={() => setSettingsOpen(true)}
+        hideOnBlur={settings?.hideOnBlur ?? false}
+        onOpenSettings={(tab) => setSettingsOpen(tab ?? 'library')}
       />
       {settingsOpen && settings && (
         <Suspense fallback={null}>
           <SettingsView
+            initialTab={settingsOpen}
             settings={settings}
             status={status}
             onChange={update}

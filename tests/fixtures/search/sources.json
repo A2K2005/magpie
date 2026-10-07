@@ -1,0 +1,65 @@
+[
+  {
+    "file": "images/001.jpg",
+    "original_file": "BeachDog2.jpg",
+    "author": "Ravello 99",
+    "license": "Public domain",
+    "source": "https://commons.wikimedia.org/wiki/File:BeachDog2.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/a/a8/BeachDog2.jpg",
+    "sha256": "786ba3d992ece522c1e66ac16b0276693189e9bbba18daca3d4ac2c68c8cc115"
+  },
+  {
+    "file": "images/002.jpg",
+    "original_file": "CorgiRunning.jpg",
+    "author": "Cmalaspina",
+    "license": "Public domain",
+    "source": "https://commons.wikimedia.org/wiki/File:CorgiRunning.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/3/37/CorgiRunning.jpg",
+    "sha256": "a2bfbdc5b4649553468809996ada1bf94ed0daffb77f02fabd19209abfb6af86"
+  },
+  {
+    "file": "images/003.jpg",
+    "original_file": "Cat in towel.jpg",
+    "author": "OboeBlanket",
+    "license": "CC0-1.0",
+    "source": "https://commons.wikimedia.org/wiki/File:Cat_in_towel.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/8/8f/Cat_in_towel.jpg",
+    "sha256": "269c18eb3e4f9e31e989c9764f06944b5ece7c61825518d27d44dafd40e60dd6"
+  },
+  {
+    "file": "images/004.jpg",
+    "original_file": "Playing cat.JPG",
+    "author": "Medved'",
+    "license": "Public domain",
+    "source": "https://commons.wikimedia.org/wiki/File:Playing_cat.JPG",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/1/19/Playing_cat.JPG",
+    "sha256": "931759993646c9bf5805d0ccdccfcba6ee48cc53115a6e17a8316a5d2270a3f3"
+  },
+  {
+    "file": "images/005.jpg",
+    "original_file": "Front Side of Bicyle.jpg",
+    "author": "Sabeel",
+    "license": "CC0-1.0",
+    "source": "https://commons.wikimedia.org/wiki/File:Front_Side_of_Bicyle.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/d/d4/Front_Side_of_Bicyle.jpg",
+    "sha256": "51c4b3bd6f41eb23c3b4153a019e4b73f25a0cbc013ee535de51aa030bb26266"
+  },
+  {
+    "file": "images/009.jpg",
+    "original_file": "Commack the dog.jpg",
+    "author": "Mgmets5",
+    "license": "Public domain",
+    "source": "https://commons.wikimedia.org/wiki/File:Commack_the_dog.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Commack_the_dog.jpg",
+    "sha256": "daa7efcfae10c96fc6e3cbc417f8a5192371dbe64f6ca6e3be120f025b54647d"
+  },
+  {
+    "file": "images/010.jpg",
+    "original_file": "Cat in backyard.jpg",
+    "author": "John Harvey",
+    "license": "Public domain",
+    "source": "https://commons.wikimedia.org/wiki/File:Cat_in_backyard.jpg",
+    "download": "https://upload.wikimedia.org/wikipedia/commons/7/76/Cat_in_backyard.jpg",
+    "sha256": "34e78a464a5be028eaf3219413d1c231fbea7872561c76d373a8cdc75520db5e"
+  }
+]

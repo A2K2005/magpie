@@ -95,7 +95,8 @@ export function Thumb(props: {
   const first = inked ? highlights[0] : undefined
   const cx = first ? first.x + first.w / 2 : 0.5
   const cy = first ? first.y + first.h / 2 : a < 1 ? 0.3 : 0.5
-  const z = first ? clamp(0.3 / Math.max(0.001, first.w * bw), 1, 2.4) : 1
+  // Zoom in on a tiny match, but not so far that every tile shows only the same word.
+  const z = first ? clamp(0.3 / Math.max(0.001, first.w * bw), 1, 1.8) : 1
   const W = bw * z
   const H = bh * z
   const style: CSSProperties = {
@@ -117,14 +118,14 @@ export function Thumb(props: {
         />
         {inked && <span className="ink" />}
         {inked &&
-          highlights.map((h, i) => <span key={i} className="magpie" style={magpie(h, shot.thumb)} />)}
+          highlights.map((h, i) => <span key={i} className="lit" style={lit(h, shot.thumb)} />)}
       </div>
     </div>
   )
 }
 
 /** A box that shows the un-inked image under one highlight. */
-function magpie(h: OcrLine, src: string): CSSProperties {
+function lit(h: OcrLine, src: string): CSSProperties {
   const px = 0.004
   const py = h.h * 0.22
   const x = Math.max(0, h.x - px)

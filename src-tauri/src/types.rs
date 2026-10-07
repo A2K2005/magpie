@@ -46,6 +46,32 @@ pub struct ShotDetail {
     pub text: String,
     pub lines: Vec<OcrLine>,
     pub actions: Vec<SmartAction>,
+    pub metadata: ShotMetadata,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShotMetadata {
+    pub note: String,
+    pub tags: Vec<String>,
+    pub collections: Vec<String>,
+    pub source_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSearch {
+    pub id: String,
+    pub name: String,
+    pub query: String,
+    pub mode: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct IndexFailure {
+    pub id: i64,
+    pub name: String,
+    pub error: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -55,6 +81,7 @@ pub struct SearchHit {
     #[serde(rename = "match")]
     pub kind: &'static str,
     pub score: f64,
+    pub evidence: Vec<&'static str>,
     pub highlights: Vec<OcrLine>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -71,6 +98,8 @@ pub struct SearchRequest {
     /// relevance | newest | oldest | largest | smallest | name
     pub sort: Option<String>,
     pub limit: Option<usize>,
+    pub mode: Option<String>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -93,6 +122,10 @@ pub struct SearchResponse {
     pub did_you_mean: Option<String>,
     /// The typed words matched nothing, so the hits are for `did_you_mean`.
     pub corrected: bool,
+    pub has_more: bool,
+    pub next_offset: Option<usize>,
+    pub query: String,
+    pub mode: String,
 }
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -118,6 +151,9 @@ pub struct IndexStatus {
     /// Shots re-read by PaddleOCR.
     pub sharp: i64,
     pub text_model: ModelInfo,
+    pub waiting_reason: Option<String>,
+    pub force_indexing: bool,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -138,6 +174,8 @@ pub struct Settings {
     pub sharp_text: bool,
     /// Save copied images to Pictures/Magpie Clipboard.
     pub save_clipboard: bool,
+    pub excluded_folders: Vec<String>,
+    pub saved_searches: Vec<SavedSearch>,
 }
 
 impl Default for Settings {
@@ -154,6 +192,8 @@ impl Default for Settings {
             scope: "folders".into(),
             sharp_text: true,
             save_clipboard: false,
+            excluded_folders: vec![],
+            saved_searches: vec![],
         }
     }
 }

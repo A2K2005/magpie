@@ -19,6 +19,21 @@ try {
 }
 const root = document.documentElement
 root.dataset.platform = window.api.platform
+
+// An app, not a web page: no browser right-click menu, reload, print, save or find bar.
+// The app's own Ctrl+F and Ctrl+P handlers still run; they don't check defaultPrevented.
+addEventListener('contextmenu', (e) => {
+  if (!(e.target as Element).closest('input, textarea, .selectable')) e.preventDefault()
+})
+addEventListener(
+  'keydown',
+  (e) => {
+    const k = e.key.toLowerCase()
+    if (/^f[357]$/.test(k) || ((e.ctrlKey || e.metaKey) && /^[rpsfgj]$/.test(k)))
+      e.preventDefault()
+  },
+  true
+)
 root.dataset.theme =
   theme === 'dark' || theme === 'light'
     ? theme

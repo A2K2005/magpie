@@ -16,10 +16,17 @@ pub const FILES: [(&str, &str, u64); 3] = [
 ];
 // Official PaddlePaddle exports. The English recogniser (438 classes) instead of the multilingual one
 // (18,385 classes): its output tensor is 40× smaller per character, which is most of the memory.
-const DET_URL: &str = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/main/inference.onnx";
-const REC_URL: &str = "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/main/inference.onnx";
+const DET_URL: &str = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx";
+const REC_URL: &str = "https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx/resolve/3fafbc3b5dcf93dd72add9f48368be8a3a2cd33b/inference.onnx";
 // Byte-identical to PaddleOCR's ppocr/utils/dict/en_dict.txt (the official repo embeds it in YAML only).
-const DICT_URL: &str = "https://huggingface.co/monkt/paddleocr-onnx/resolve/main/languages/english/dict.txt";
+const DICT_URL: &str = "https://huggingface.co/monkt/paddleocr-onnx/resolve/7b02d0a30a07ba2b92ad1ff5a8941ae2c633de65/languages/english/dict.txt";
+
+// Verified against pinned Hugging Face model metadata and dictionary bytes on 2026-10-07.
+pub const SHA256: [(&str, &str); 3] = [
+    ("paddle/det.onnx", "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d"),
+    ("paddle/rec.onnx", "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f"),
+    ("paddle/dict.txt", "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"),
+];
 
 /// Detection input is capped at about this many pixels: screen text is legible at native size,
 /// and upscaling only costs memory.

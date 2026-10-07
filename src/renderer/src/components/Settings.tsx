@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   Folder,
   FolderPlus,
@@ -12,7 +12,16 @@ import {
   X
 } from 'lucide-react'
 import type { IndexStatus, Settings, Stats } from '../../../shared/types'
-import { accelerator, basename, bytes, isMac, num, plural, trashKey } from '../lib/util'
+import {
+  accelerator,
+  basename,
+  FILTERS,
+  isMac,
+  num,
+  plural,
+  trashKey,
+  trashName
+} from '../lib/util'
 import { Kbd, ScopeChoice, Switch } from './ui'
 
 const api = window.api
@@ -31,11 +40,26 @@ interface Props {
   /** Resolves with what was actually saved (main may refuse a hotkey). */
   onChange(patch: Partial<Settings>): Promise<Settings>
   onClose(): void
+  initialTab?: Tab
 }
 
 export default function SettingsView(props: Props): React.JSX.Element {
   const { onClose } = props
-  const [tab, setTab] = useState<Tab>('library')
+  const [saveError, setSaveError] = useState('')
+  const safeProps = {
+    ...props,
+    onChange: async (patch: Partial<Settings>): Promise<Settings> => {
+      try {
+        const next = await props.onChange(patch)
+        setSaveError('')
+        return next
+      } catch (e) {
+        setSaveError(`Couldn’t save settings: ${String(e)}`)
+        return props.settings
+      }
+    }
+  }
+  const [tab, setTab] = useState<Tab>(props.initialTab ?? 'library')
   const recordingRef = useRef(false)
   const root = useRef<HTMLDivElement>(null)
 
@@ -115,9 +139,14 @@ export default function SettingsView(props: Props): React.JSX.Element {
           role="tabpanel"
           aria-labelledby={`tab-${tab}`}
         >
-          {tab === 'library' && <Library {...props} />}
-          {tab === 'search' && <SearchTab {...props} />}
-          {tab === 'general' && <General {...props} recordingRef={recordingRef} />}
+          {saveError && (
+            <p className="error" role="alert">
+              {saveError}
+            </p>
+          )}
+          {tab === 'library' && <Library {...safeProps} />}
+          {tab === 'search' && <SearchTab {...safeProps} />}
+          {tab === 'general' && <General {...safeProps} recordingRef={recordingRef} />}
           {tab === 'shortcuts' && <Shortcuts settings={props.settings} />}
         </div>
       </div>
@@ -127,39 +156,71 @@ export default function SettingsView(props: Props): React.JSX.Element {
 
 // ---------------------------------------------------------------- library
 
-const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'short' })
-const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
-const monthDate = (m: string): Date => new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1, 1)
-
 function Library({ settings, status, onChange }: Props): React.JSX.Element {
+  const [error, setError] = useState('')
   const [stats, setStats] = useState<Stats | null>(null)
+  /** A folder (or the whole-computer scope) waiting for "forget" to be confirmed. */
+  const [removing, setRemoving] = useState<string | null>(null)
   const total = status?.total
 
   useEffect(() => {
-    api.stats().then(setStats)
+    api
+      .stats()
+      .then(setStats)
+      .catch((e) => setError(String(e)))
   }, [settings.folders, total])
 
   const add = async (): Promise<void> => {
-    const p = await api.pickFolder()
-    if (p && !settings.folders.includes(p)) onChange({ folders: [...settings.folders, p] })
+    try {
+      const p = await api.pickFolder()
+      if (p && !settings.folders.includes(p)) await onChange({ folders: [...settings.folders, p] })
+    } catch (e) {
+      setError(String(e))
+    }
   }
   const counts = new Map(stats?.folders.map((f) => [f.path, f.count]))
-  const max = Math.max(1, ...(stats?.months.map((m) => m.count) ?? []))
 
   const everywhere = settings.scope === 'everywhere'
 
   return (
     <>
       <h2 className="panel-title">Library</h2>
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
       <section className="group">
         <h3 id="scope-label">Where to look</h3>
         <ScopeChoice
           value={settings.scope}
-          onChange={(scope) => onChange({ scope })}
+          // Narrowing forgets everything outside the folders, which can take hours to read back.
+          onChange={(scope) => (scope === 'folders' ? setRemoving('*') : onChange({ scope }))}
           labels={['Chosen folders', 'Everywhere on this computer']}
           foldersHint="Only the folders listed below."
           labelledBy="scope-label"
         />
+        {removing === '*' && (
+          <div className="confirm" role="alert">
+            <p>
+              Magpie forgets every image outside your folders. Switching back reads them all again.
+            </p>
+            <div className="btn-row">
+              <button
+                className="btn danger small"
+                onClick={() => {
+                  setRemoving(null)
+                  onChange({ scope: 'folders' })
+                }}
+              >
+                Only chosen folders
+              </button>
+              <button className="btn ghost small" onClick={() => setRemoving(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="group">
@@ -179,15 +240,37 @@ function Library({ settings, status, onChange }: Props): React.JSX.Element {
                   {f}
                 </span>
               </span>
-              {counts.has(f) && <span className="row-value">{plural(counts.get(f)!, 'shot')}</span>}
-              <button
-                className="icon-btn"
-                aria-label={`Stop watching ${f}`}
-                title="Remove"
-                onClick={() => onChange({ folders: settings.folders.filter((x) => x !== f) })}
-              >
-                <X size={14} strokeWidth={1.75} />
-              </button>
+              {removing === f ? (
+                <span className="btn-row" role="alert">
+                  <button
+                    className="btn danger small"
+                    autoFocus
+                    onClick={() => {
+                      setRemoving(null)
+                      onChange({ folders: settings.folders.filter((x) => x !== f) })
+                    }}
+                  >
+                    {counts.get(f) ? `Forget ${plural(counts.get(f)!, 'image')}` : 'Remove'}
+                  </button>
+                  <button className="btn ghost small" onClick={() => setRemoving(null)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <>
+                  {counts.has(f) && (
+                    <span className="row-value">{plural(counts.get(f)!, 'image')}</span>
+                  )}
+                  <button
+                    className="icon-btn"
+                    aria-label={`Stop watching ${f}`}
+                    title="Remove"
+                    onClick={() => setRemoving(f)}
+                  >
+                    <X size={14} strokeWidth={1.75} />
+                  </button>
+                </>
+              )}
             </li>
           ))}
           {settings.folders.length === 0 && (
@@ -205,6 +288,46 @@ function Library({ settings, status, onChange }: Props): React.JSX.Element {
       </section>
 
       <section className="group">
+        <h3>Excluded folders</h3>
+        <p className="group-hint">
+          Images in these folders and their subfolders are left out of the index, including when
+          searching everywhere.
+        </p>
+        <ul className="list">
+          {settings.excludedFolders.map((f) => (
+            <li className="row" key={f}>
+              <span className="row-text path" title={f}>
+                {f}
+              </span>
+              <button
+                className="icon-btn"
+                aria-label={`Stop excluding ${f}`}
+                onClick={() =>
+                  onChange({ excludedFolders: settings.excludedFolders.filter((v) => v !== f) })
+                }
+              >
+                <X size={14} />
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button
+          className="btn"
+          onClick={async () => {
+            try {
+              const folder = await api.pickFolder()
+              if (folder && !settings.excludedFolders.includes(folder))
+                await onChange({ excludedFolders: [...settings.excludedFolders, folder] })
+            } catch (e) {
+              setError(String(e))
+            }
+          }}
+        >
+          Exclude folder…
+        </button>
+      </section>
+
+      <section className="group">
         <Switch
           checked={settings.saveClipboard}
           onChange={(v) => onChange({ saveClipboard: v })}
@@ -212,68 +335,6 @@ function Library({ settings, status, onChange }: Props): React.JSX.Element {
           hint="Images you copy are saved to Pictures › Magpie Clipboard, so you can find them later."
         />
       </section>
-
-      {stats && (
-        <section className="group">
-          <h3>Overview</h3>
-          <div className="figures">
-            <div className="figure">
-              <span className="figure-value">{num(stats.total)}</span>
-              <span className="figure-label">Images</span>
-            </div>
-            <div className="figure">
-              <span className="figure-value">{num(stats.withText)}</span>
-              <span className="figure-label">
-                With text
-                {stats.total > 0 && ` · ${Math.round((stats.withText / stats.total) * 100)}%`}
-              </span>
-            </div>
-            <div className="figure">
-              <span className="figure-value">{bytes(stats.bytes)}</span>
-              <span className="figure-label">On disk</span>
-            </div>
-          </div>
-
-          <div className="chart">
-            <div className="chart-head">
-              <span>Images per month</span>
-              <span className="muted">Last 12 months</span>
-            </div>
-            <ol className="bars" aria-label="Images per month, last 12 months">
-              {stats.months.map((m, i) => {
-                const label = `${fmtMonthYear.format(monthDate(m.month))}: ${plural(m.count, 'image')}`
-                return (
-                  <li key={m.month} className="bar-col" aria-label={label} data-tip={num(m.count)}>
-                    <span
-                      className="bar-fill"
-                      data-current={i === stats.months.length - 1 || undefined}
-                      style={{ height: `${(m.count / max) * 100}%` }}
-                    />
-                    <span className="bar-label" aria-hidden>
-                      {fmtMonth.format(monthDate(m.month)).slice(0, 1)}
-                    </span>
-                  </li>
-                )
-              })}
-            </ol>
-          </div>
-
-          {stats.colors.length > 0 && (
-            <div className="top-colors">
-              <span className="chart-head">Most common colors</span>
-              <ul className="color-row">
-                {stats.colors.map((c) => (
-                  <li key={c.hex} title={`${c.hex} · ${plural(c.count, 'image')}`}>
-                    <span className="swatch lg" style={{ background: c.hex }} aria-hidden />
-                    <span className="color-count">{num(c.count)}</span>
-                    <span className="sr-only">{c.hex}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
     </>
   )
 }
@@ -301,9 +362,10 @@ function ModelRow(props: {
     <div className="row">
       <span className="row-text">
         <span className="row-label">{label}</span>
+        {/* The raw error is for bug reports; the hint says what to do. */}
         {model.state === 'error' && (
-          <span className="row-hint">
-            {model.error ?? 'Turn the setting off and on to try again.'}
+          <span className="row-hint" title={model.error}>
+            Couldn’t load. Use Repair models below to retry the download.
           </span>
         )}
       </span>
@@ -329,9 +391,35 @@ function SearchTab({ settings, status, onChange }: Props): React.JSX.Element {
   const model = status?.model
   const paused = status?.state === 'paused'
   const [rebuilt, setRebuilt] = useState(false)
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const [failures, setFailures] = useState<Awaited<ReturnType<typeof api.failures>>>([])
+  useEffect(() => {
+    api
+      .failures()
+      .then(setFailures)
+      .catch((e) => setMessage(String(e)))
+  }, [status?.errors])
+  const run = async (action: () => Promise<unknown>, success: string): Promise<void> => {
+    setBusy(true)
+    try {
+      await action()
+      if (success) setMessage(success)
+    } catch (e) {
+      setMessage(`Couldn’t complete action: ${String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <>
       <h2 className="panel-title">Search</h2>
+      {message && (
+        <p role="status" className="group-hint">
+          {message}
+        </p>
+      )}
       <section className="group">
         <Switch
           checked={settings.semantic}
@@ -339,7 +427,25 @@ function SearchTab({ settings, status, onChange }: Props): React.JSX.Element {
           label="Search by what images show"
           hint="Find shots like “sunset” or “receipt” even when they have no matching text. Downloads a 150 MB model once. Images never leave this device."
         />
-        {settings.semantic && model && <ModelRow label="Visual model" model={model} />}
+        {settings.semantic && model && (
+          <ModelRow label="Visual model" model={model} ready="Model loaded" />
+        )}
+        {settings.semantic && status && (
+          <div className="coverage">
+            <progress
+              max={Math.max(1, status.total)}
+              value={status.embedded}
+              aria-label="Visual search coverage"
+            />
+            <p>
+              {num(status.embedded)} of {num(status.total)} images searchable by look (
+              {status.total ? Math.round((status.embedded / status.total) * 100) : 0}%).
+            </p>
+            <p className="group-hint">
+              A loaded model can search only images already indexed. {status.waitingReason || ''}
+            </p>
+          </div>
+        )}
       </section>
 
       {api.platform === 'win32' && (
@@ -386,8 +492,10 @@ function SearchTab({ settings, status, onChange }: Props): React.JSX.Element {
         <div className="btn-row">
           <button
             className="btn"
-            onClick={() => api.pause(!paused)}
-            disabled={!status || status.state === 'idle'}
+            onClick={() =>
+              run(() => api.pause(!paused), paused ? 'Indexing resumed' : 'Indexing paused')
+            }
+            disabled={busy || !status || status.state === 'idle'}
           >
             {paused ? (
               <Play size={14} strokeWidth={1.75} aria-hidden />
@@ -399,8 +507,10 @@ function SearchTab({ settings, status, onChange }: Props): React.JSX.Element {
           <button
             className="btn"
             onClick={() => {
-              api.reindex()
-              setRebuilt(true)
+              void run(async () => {
+                await api.reindex()
+                setRebuilt(true)
+              }, 'Rebuild requested')
             }}
           >
             <RotateCw size={14} strokeWidth={1.75} aria-hidden />
@@ -409,9 +519,145 @@ function SearchTab({ settings, status, onChange }: Props): React.JSX.Element {
         </div>
         <p className="group-hint" role="status">
           {rebuilt
-            ? 'Rebuilding. Search keeps working with what’s already indexed.'
-            : 'Rebuilding reads every image again. Use it if results look out of date.'}
+            ? 'Rebuild requested. Progress is shown above.'
+            : 'Rebuilding reads every image again. Use it if results look out of date. Rebuilding and retrying run with priority and may increase CPU use and battery consumption.'}
         </p>
+      </section>
+      <section className="group">
+        <h3>Finish indexing</h3>
+        <p className="group-hint">
+          Continue while you’re using the computer, including on battery. This may increase CPU use,
+          fan noise and power consumption. Normal background behavior returns when indexing
+          finishes.
+        </p>
+        <button
+          className="btn"
+          disabled={busy || !status || status.total === 0}
+          onClick={() =>
+            run(
+              () => api.finishIndexing(!status?.forceIndexing),
+              status?.forceIndexing
+                ? 'Normal background indexing restored'
+                : 'Priority indexing requested'
+            )
+          }
+        >
+          {status?.forceIndexing ? 'Use normal background indexing' : 'Finish indexing now'}
+        </button>
+      </section>
+      <section className="group">
+        <h3>Recovery</h3>
+        {status?.warnings?.map((warning) => (
+          <p className="group-hint" key={warning} role="status">
+            {warning}
+          </p>
+        ))}
+        {failures.length > 0 && (
+          <ul className="list">
+            {failures.map((f) => (
+              <li className="row" key={f.id}>
+                <span className="row-text">
+                  <span className="row-label">{f.name}</span>
+                  <span className="row-hint">{f.error}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="btn-row">
+          <button
+            className="btn"
+            disabled={busy || !status?.errors}
+            onClick={() => run(api.retryFailed, 'Failed files queued for another attempt')}
+          >
+            Retry failed files
+          </button>
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              run(api.repairModels, 'Model repair requested. A download may be needed.')
+            }
+          >
+            Repair models
+          </button>
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                const path = await api.exportDiagnostics()
+                if (path) setMessage(`Diagnostics saved to ${path}`)
+              }, '')
+            }
+          >
+            Export diagnostics…
+          </button>
+        </div>
+        <p className="group-hint">
+          Search and indexing run locally. Diagnostic exports contain aggregate status and settings
+          flags, without image paths, OCR text, notes or search queries.
+        </p>
+        {!confirmClear ? (
+          <button className="btn ghost" disabled={busy} onClick={() => setConfirmClear(true)}>
+            Clear local index…
+          </button>
+        ) : (
+          <div className="confirm" role="alert">
+            <p>
+              Clear Glint’s local index, extracted text, metadata and feedback? Your original images
+              stay in place. Watched folders and clipboard saving will be turned off. Choose folders
+              again to start a new index.
+            </p>
+            <div className="btn-row">
+              <button
+                className="btn danger"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    await api.clearIndex()
+                    await onChange({})
+                    setConfirmClear(false)
+                  }, 'Local index cleared. Choose folders in Library to start again.')
+                }
+              >
+                Clear local index
+              </button>
+              <button className="btn ghost" onClick={() => setConfirmClear(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+      <section className="group">
+        <h3>Saved searches</h3>
+        <ul className="list">
+          {settings.savedSearches.map((saved) => (
+            <li className="row" key={saved.id}>
+              <span className="row-text">
+                <span className="row-label">{saved.name}</span>
+                <span className="row-hint">
+                  {saved.mode} · {saved.query}
+                </span>
+              </span>
+              <button
+                className="icon-btn"
+                aria-label={`Remove saved search ${saved.name}`}
+                onClick={() =>
+                  onChange({
+                    savedSearches: settings.savedSearches.filter((s) => s.id !== saved.id)
+                  })
+                }
+              >
+                <X size={14} />
+              </button>
+            </li>
+          ))}
+        </ul>
+        {!settings.savedSearches.length && (
+          <p className="group-hint">Save a search from the search bar to use it here again.</p>
+        )}
       </section>
     </>
   )
@@ -447,9 +693,7 @@ function General({
             <span className="row-label" id="copy-latest-label">
               Copy latest image
             </span>
-            <span className="row-hint">
-              Puts the newest image on the clipboard, from any app
-            </span>
+            <span className="row-hint">Puts the newest image on the clipboard, from any app</span>
           </span>
           <HotkeyRecorder
             labelId="copy-latest-label"
@@ -560,25 +804,31 @@ function Shortcuts({ settings }: { settings: Settings }): React.JSX.Element {
     [settings.hotkey, 'Open Magpie from anywhere'],
     ...(settings.copyLatestHotkey
       ? [
-          [
-            settings.copyLatestHotkey,
-            'Copy the newest image to the clipboard, from any app'
-          ] as [string, string]
+          [settings.copyLatestHotkey, 'Copy the newest image to the clipboard, from any app'] as [
+            string,
+            string
+          ]
         ]
       : []),
     ['Up+Down+Left+Right', 'Move through results'],
     ['Enter', 'Open the selected shot'],
     ['Mod+C', 'Copy its text'],
     ['Mod+Shift+C', 'Copy the image'],
-    ['Mod+F', 'Find similar shots'],
+    ['Mod+F', 'Go to the search box'],
+    ['Mod+Shift+F', 'Find similar images'],
     ['Mod+P', 'Pin or unpin'],
     ['Mod+E', 'Show every shot in a burst'],
     ['Mod+L', 'Switch between grid and list'],
     ['Mod+Shift+A', 'Select all results'],
-    [trashKey(), 'Move selected to the trash'],
-    ['Mod+Z', 'Undo the last trash'],
+    [trashKey(), `Move selected to the ${trashName()}`],
+    ['Mod+Z', 'Undo the last move'],
     ['Mod+,', 'Settings'],
-    ['Esc', 'Go back, clear the search, then hide']
+    [
+      'Esc',
+      settings.hideOnBlur
+        ? 'Go back, clear the search, then hide'
+        : 'Go back, then clear the search'
+    ]
   ]
   return (
     <>
@@ -595,6 +845,18 @@ function Shortcuts({ settings }: { settings: Settings }): React.JSX.Element {
               <Kbd combo={combo} />
             </dd>
           </div>
+        ))}
+      </dl>
+      <h2 className="panel-title sub">Search filters</h2>
+      <p className="group-hint">Type these in the search box, alone or with words.</p>
+      <dl className="syntax">
+        {FILTERS.map(([token, desc]) => (
+          <Fragment key={token}>
+            <dt>
+              <code>{token}</code>
+            </dt>
+            <dd>{desc}</dd>
+          </Fragment>
         ))}
       </dl>
     </>

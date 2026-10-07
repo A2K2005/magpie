@@ -1,0 +1,35 @@
+[
+  {
+    "file": "images/006.png",
+    "title": "Pet care notes",
+    "lines": [
+      "Dog food delivery",
+      "Review nutritional information",
+      "No animals are pictured on this screen."
+    ],
+    "kind": "deterministic synthetic UI text",
+    "sha256": "841f5b0db5fb74652802df22358346cfe07526b6a29cae9484a035212d6d706a"
+  },
+  {
+    "file": "images/007.png",
+    "title": "Invoice #42",
+    "lines": [
+      "Amount due: 250.00",
+      "Payment terms: net 30",
+      "Customer: Example Company"
+    ],
+    "kind": "deterministic synthetic UI text",
+    "sha256": "7a720a42b16c15869f4f226d18e181a6f109ed941ca2597eda9dee5eb4e3d615"
+  },
+  {
+    "file": "images/008.png",
+    "title": "Code review",
+    "lines": [
+      "function calculateTotal(items) {",
+      "  return items.reduce((sum, item) => sum + item.price, 0);",
+      "}"
+    ],
+    "kind": "deterministic synthetic UI text",
+    "sha256": "ef7b9e94b75b547ac520e0ed3ee28497e912c8092aecc6fe73c3934875b68490"
+  }
+]

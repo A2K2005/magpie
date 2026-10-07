@@ -1,0 +1,151 @@
+{
+  "description": "Held-out new photos selected after canonical query prompt froze: existing8 starter images plus previously unseen public-domain Commack dog and backyard cat (sources.json). No prompt/threshold tuning after these results. Tests same pinned model and absolute0.25 threshold.",
+  "images": [
+    {
+      "id": "samoyed",
+      "path": "images/001.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "corgi",
+      "path": "images/002.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "cat-towel",
+      "path": "images/003.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "cat-playing",
+      "path": "images/004.jpg",
+      "tags": [
+        "pets"
+      ],
+      "collections": [
+        "Animals"
+      ]
+    },
+    {
+      "id": "bicycle",
+      "path": "images/005.jpg"
+    },
+    {
+      "id": "dog-text",
+      "path": "images/006.png",
+      "text": "Pet care notes Dog food delivery Review nutritional information No animals are pictured on this screen."
+    },
+    {
+      "id": "invoice",
+      "path": "images/007.png",
+      "text": "Invoice #42 Amount due: 250.00 Payment terms: net 30 Customer: Example Company"
+    },
+    {
+      "id": "code",
+      "path": "images/008.png",
+      "text": "Code review function calculateTotal(items) { return items.reduce((sum, item) => sum + item.price, 0); }"
+    },
+    {
+      "id": "heldout-dog",
+      "path": "images/009.jpg",
+      "tags": [
+        "pets"
+      ]
+    },
+    {
+      "id": "heldout-cat",
+      "path": "images/010.jpg",
+      "tags": [
+        "pets"
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "query": "dog",
+      "mode": "visual",
+      "relevant": [
+        "samoyed",
+        "corgi",
+        "heldout-dog"
+      ],
+      "k": 5
+    },
+    {
+      "query": "cat",
+      "mode": "visual",
+      "relevant": [
+        "cat-towel",
+        "cat-playing",
+        "heldout-cat"
+      ],
+      "k": 5
+    },
+    {
+      "query": "dog",
+      "mode": "all",
+      "relevant": [
+        "samoyed",
+        "corgi",
+        "heldout-dog",
+        "dog-text"
+      ],
+      "k": 5
+    },
+    {
+      "query": "dog tag:pets",
+      "mode": "visual",
+      "relevant": [
+        "samoyed",
+        "corgi",
+        "heldout-dog"
+      ],
+      "k": 5
+    },
+    {
+      "query": "frog",
+      "mode": "visual",
+      "relevant": [],
+      "k": 5
+    },
+    {
+      "query": "helicopter",
+      "mode": "visual",
+      "relevant": [],
+      "k": 5
+    },
+    {
+      "query": "car",
+      "mode": "visual",
+      "relevant": [],
+      "k": 5
+    },
+    {
+      "query": "receipt",
+      "mode": "visual",
+      "relevant": [],
+      "k": 5
+    },
+    {
+      "query": "a red sports car",
+      "mode": "visual",
+      "relevant": [],
+      "k": 5
+    }
+  ]
+}

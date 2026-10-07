@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Magpie Capture",
+  "description": "Save the visible page and its source context to your local Magpie folder.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "downloads"],
+  "action": { "default_title": "Capture to Magpie", "default_popup": "popup.html" }
+}

@@ -6,3 +6,10 @@ src-tauri/gen
 *.log
 .DS_Store
 .claude/
+
+# Keep the supported native evaluation tools visible even with local examples exclusions.
+!src-tauri/examples/
+src-tauri/examples/*
+!src-tauri/examples/engine_bench.rs
+!src-tauri/examples/engine_smoke.rs
+!src-tauri/examples/search_eval.rs
